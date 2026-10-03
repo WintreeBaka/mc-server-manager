@@ -1,0 +1,61 @@
+我的世界服务器管理器 1.0.0（Windows x64 便携版）
+================================================
+
+一、运行要求
+------------
+1. Windows 10 / 11 64 位。
+2. Docker Desktop（必需）。服务器的 JDK 运行环境全部在容器里，本机不需要安装 Java。
+   下载：https://www.docker.com/products/docker-desktop/
+3. 首次创建服务器需要联网（下载服务端 jar 与 JDK 镜像，单个镜像约 200-450 MB）。
+
+二、快速开始
+------------
+1. 启动 Docker Desktop，等托盘图标显示为运行中。
+2. 双击 McServerManager.exe。标题栏会显示“后端就绪 / Docker 运行中”。
+3. 首页点击【新建服务器】：
+   - 选择【一键自动配置】，填写名称，选择服务端（Paper / Purpur / 原版 / Fabric）与游戏版本，
+     界面会显示该版本需要的 JDK，随后自动完成“下载服务端 → 拉取 JDK 镜像 → 生成配置”。
+   - 也可以切到【手动导入】，使用你已有的服务端 jar 与指定镜像。
+4. 回到【服务器】页，选中服务器，点击【一键启动】。启动失败会在页面顶部显示原因，并把日志末尾附在下方。
+5. 【控制台】页可以实时看日志、发指令（已内置 save-all / list / 时间天气等快捷按钮）。
+6. 【配置文件】页支持“快捷配置”和“专家模式”两种写法，每次保存前都会自动留档，可随时回滚。
+7. 【备份】页可设置定时自动备份（间隔、保留份数、是否含插件、备份前是否先存档），也可随时手动快照。
+8. 【插件】页从 Modrinth / Hangar 搜索并一键安装插件，安装后重启服务器生效。
+
+三、数据目录
+------------
+默认：%LOCALAPPDATA%\McServerManager
+  servers\<id>\            单个服务器的工作目录（容器内挂载为 /data）
+  servers\<id>\backups\    存档备份（.tar.gz）
+  servers\<id>\config-backups\  server.properties 的历史版本
+  logs\backend.log         后端诊断日志
+  gui.ini                  界面设置（主题、动画、后端路径）
+
+想换位置：设置 → 数据目录，填入新路径并“应用”；或用命令行参数 --home "D:\mcsm"，
+也可以设置环境变量 MCSM_HOME。
+
+四、常见问题
+------------
+* 提示“Docker 未运行”：启动 Docker Desktop 后点“重新检测环境”。
+* 拉取 JDK 镜像很慢或失败：给 Docker Desktop 配置镜像加速器
+  （设置 → Docker Engine → registry-mirrors），配置后重启 Docker。
+* 提示端口被占用：在配置页改 server-port，或改用其它端口重新创建服务器。
+* 提示 JDK 版本不匹配：在【配置文件 → 服务器设置】里调整运行环境，或重建服务器让管理器自动匹配。
+* 备份失败提示缺少 tar：Windows 10 1803 以上自带 tar；仍失败时请让服务器保持运行（管理器会用容器内的 tar）。
+
+五、命令行（可选）
+------------------
+同目录下的 mcsm-cli.exe 是完整后端，所有功能都能脚本化：
+  mcsm-cli doctor                                  环境自检
+  mcsm-cli versions --type paper                    可用版本 + 推荐 JDK
+  mcsm-cli install --name 生存服 --type paper --version 1.21.8 --memory 4G
+  mcsm-cli server list / start / stop / restart --id 生存服
+  mcsm-cli server command --id 生存服 --command "say hi"
+  mcsm-cli backup create --id 生存服 --note "更新前"
+  mcsm-cli daemon --interval 60                     常驻定时备份
+完整命令见 mcsm-cli help 或随包 README.md。
+
+六、卸载
+--------
+删除本目录即可；如果不再需要数据，再删除 %LOCALAPPDATA%\McServerManager。
+已下载的 Docker 镜像可用 docker rmi 清理（例如 docker rmi eclipse-temurin:21-jre）。

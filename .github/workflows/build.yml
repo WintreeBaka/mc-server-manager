@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (Qt ${{ matrix.qt }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: [ '6.6.3' ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ matrix.qt }}
+          arch: win64_mingw
+          cache: true
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Source consistency check
+        run: python tools/static_check.py
+
+      - name: Backend smoke test
+        shell: pwsh
+        run: ./tools/smoke-test.ps1 -Exe ./build/bin/mcsm-cli.exe
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: McServerManager-${{ matrix.qt }}-win64
+          path: build/bin/
+          if-no-files-found: error

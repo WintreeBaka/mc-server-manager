@@ -1,0 +1,30 @@
+# build output
+build/
+build-*/
+out/
+dist/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.pro.user
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+
+# local test artifacts
+smoke-data/
+smoke-shot.png
+shot-*.png
+v2-*.png
+*.tar.gz
+*.zip
+
+# Qt Creator
+*.autosave
+
+# python
+__pycache__/
+*.pyc
