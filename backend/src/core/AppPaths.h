@@ -18,6 +18,10 @@ public:
     static QString logsDir();
     static QString tmpDir();
     static QString templatesDir();
+    static QString pluginsDir();
+    static QString pluginRegistryFile();
+    static QString pluginDir(const QString &pluginId);
+    static QString pluginDataDir(const QString &pluginId);
     static QString registryFile();
     static QString settingsFile();
 
@@ -25,6 +29,8 @@ public:
     static QString serverBackupDir(const QString &serverId);
     static QString serverConfigBackupDir(const QString &serverId);
     static QString serverPluginDir(const QString &serverId);
+    static QString serverRuntimeDir(const QString &serverId);
+    static QString serverStartPatchFile(const QString &serverId);
     static QString serverMetaFile(const QString &serverId);
     static QString serverJarPath(const QString &serverId, const QString &jarName);
     static QString logFilePath();

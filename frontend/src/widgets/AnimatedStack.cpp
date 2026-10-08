@@ -40,6 +40,47 @@ QWidget *AnimatedStack::page(int index) const
     return m_pages.at(index);
 }
 
+void AnimatedStack::removePage(QWidget *page)
+{
+    const int index = m_pages.indexOf(page);
+    if (index < 0)
+        return;
+    const bool wasCurrent = index == m_current;
+    resetTransition();
+    m_pages.removeAt(index);
+    if (m_current > index)
+        --m_current;
+    else if (wasCurrent)
+        m_current = -1;
+    page->setParent(nullptr);
+    page->deleteLater();
+    if (wasCurrent) {
+        // show whatever is left instead of an empty stack
+        const int fallback = qBound(0, index - 1, m_pages.size() - 1);
+        if (fallback >= 0 && fallback < m_pages.size()) {
+            m_current = fallback;
+            QWidget *widget = m_pages.at(fallback);
+            widget->setGeometry(rect());
+            widget->show();
+            widget->raise();
+            emit currentChanged(fallback);
+        }
+    }
+}
+
+void AnimatedStack::setCurrentIndexSilently(int index)
+{
+    if (index < 0 || index >= m_pages.size())
+        return;
+    m_current = index;
+    resetTransition();
+    QWidget *widget = m_pages.at(index);
+    widget->setGeometry(rect());
+    widget->show();
+    widget->raise();
+    emit currentChanged(index);
+}
+
 QWidget *AnimatedStack::currentWidget() const
 {
     return page(m_current);

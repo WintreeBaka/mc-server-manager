@@ -6,6 +6,9 @@
     Usage:
         .\tools\gui-smoke.ps1
         .\tools\gui-smoke.ps1 -Screenshot .\smoke-shot.png -Seconds 10
+        .\tools\gui-smoke.ps1 -Page settings-runtime -Resize 1100x700 -Screenshot .\small.png
+
+    -Resize needs -Screenshot (the Win32 helpers are only loaded for capture).
 #>
 param(
     [string]$Exe = ".\build\bin\McServerManager.exe",
@@ -14,6 +17,7 @@ param(
     [int]$Seconds = 9,
     [string]$Screenshot = "",
     [string]$Page = "",
+    [string]$Resize = "",
     [switch]$TestDrag,
     [switch]$TestPageSwitch,
     [switch]$KeepOpen
@@ -102,6 +106,17 @@ public class WinApi {
     # geometry of the window in screen coordinates (used by both test blocks)
     $windowRect = New-Object WinApi+RECT
     [void][WinApi]::GetWindowRect($handle, [ref]$windowRect)
+
+    if ($Resize -match '^(\d+)x(\d+)$') {
+        # shrink the window first: layout regressions (menus scrolling away,
+        # overlapping cards) only show up in small windows
+        $targetW = [int]$Matches[1]
+        $targetH = [int]$Matches[2]
+        [void][WinApi]::SetWindowPos($handle, [IntPtr]::Zero, $windowRect.Left, $windowRect.Top,
+                                     $targetW, $targetH, 0x0004)
+        Start-Sleep -Milliseconds 1200
+        Write-Result ("window resized to " + $targetW + "x" + $targetH) $true
+    }
 
     if ($TestDrag) {
         $before = New-Object WinApi+RECT
@@ -206,10 +221,16 @@ if (-not $process.WaitForExit(8000)) {
 }
 Write-Result "closed cleanly" $process.HasExited "still running"
 
-# the app starts a scheduler daemon; make sure it does not outlive the window
-$leftover = Get-Process -Name "mcsm-cli" -ErrorAction SilentlyContinue
+# the app starts a scheduler daemon; it must not outlive the window. Killing it
+# takes a moment, so give it a few seconds before deciding.
+$leftover = $null
+for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    $leftover = Get-Process -Name "mcsm-cli" -ErrorAction SilentlyContinue
+    if ($null -eq $leftover) { break }
+    Start-Sleep -Milliseconds 600
+}
 Write-Result "no leftover backend daemon" ($null -eq $leftover) `
-    ("still running: " + ($leftover | Measure-Object).Count)
+    ("still running: " + (($leftover | Measure-Object).Count))
 
 Write-Host ""
 if ($failed -eq 0) {

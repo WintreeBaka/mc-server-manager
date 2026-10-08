@@ -103,7 +103,7 @@ mcsm-cli install --name 测试服 --type paper --version 1.21.8 \
 | `backup remove --id <id> --backup <文件名>` | 删除某个备份 |
 | `backup schedule --id <id> --enabled true --interval 180 --keep 10 [--plugins true] [--save-first true]` | 定时备份计划 |
 
-## 插件
+## 服务器插件（装进某台服务器的 jar）
 
 | 命令 | 说明 |
 | --- | --- |
@@ -113,6 +113,34 @@ mcsm-cli install --name 测试服 --type paper --version 1.21.8 \
 | `plugin list --id <id>` | 已安装插件（含启用状态） |
 | `plugin toggle --id <id> --file X.jar --enabled false` | 启用 / 禁用（禁用即重命名为 `.jar.disabled`） |
 | `plugin remove --id <id> --file X.jar` | 删除插件 |
+
+## 管理器插件包（Plugin SDK）
+
+扩展管理器本身（前端页面 / 后端钩子 / Web 面板），安装位置是 `<数据根>/plugins/`，
+完整接口见 [PLUGIN-SDK.md](PLUGIN-SDK.md)。
+
+| 命令 | 说明 |
+| --- | --- |
+| `plugin api` | 导出机器可读的接口清单（作用域、前端命名空间、钩子、CLI 命令） |
+| `plugin packages [--enabled]` | 已安装的插件包（含作用域、启用状态、来源 URL） |
+| `plugin package inspect --zip <file>` / `--url <url>` | 只校验：解析 `plugin.json`、自动识别作用域、检查入口文件，不写入磁盘 |
+| `plugin package install --zip <file> [--force] [--disabled] [--expect <id>]` | 从本地 zip 安装（`--force` 覆盖同名插件） |
+| `plugin package install --url <url> [--force]` | 下载并安装（解压使用随包内置的 7-Zip） |
+| `plugin package list` | 同 `plugin packages` |
+| `plugin package info --name <id>` | 详情：清单、启动命令、Web 服务状态 |
+| `plugin package enable` / `disable --name <id>` | 启用 / 停用（触发 `plugin.enable` / `plugin.disable` 钩子） |
+| `plugin package remove --name <id> [--purge-data]` | 卸载（触发 `plugin.uninstall`；`--purge-data` 同时删除插件数据） |
+| `plugin call --name <id> --method <m> [--params '{...}'] [--timeout ms]` | 调用插件后端方法（JSON-Line RPC） |
+| `plugin hook --name <id>` / `--all --hook <h> [--payload '{...}']` | 手动触发钩子（`--all` 广播给所有声明了该钩子的插件） |
+| `plugin service start` / `stop` / `status --name <id>` | 管理插件自带的本地 Web 面板服务 |
+
+```bash
+# 从示例插件包安装并试跑
+mcsm-cli plugin package inspect --zip dist/plugins/com.example.ops-console-1.0.0.zip
+mcsm-cli plugin package install --zip dist/plugins/com.example.ops-console-1.0.0.zip
+mcsm-cli plugin call --name com.example.ops-console --method summary
+mcsm-cli plugin service start --name com.example.ops-console
+```
 
 ## 调度与设置
 

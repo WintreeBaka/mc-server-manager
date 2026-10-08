@@ -28,6 +28,8 @@ public:
     QJsonObject data() const { return m_data; }
     QString errorCode() const { return m_code; }
     QString errorMessage() const { return m_message; }
+    QString errorDetail() const { return m_detail; }
+    QStringList warnings() const { return m_warnings; }
 
     QJsonObject toJson() const;
     QByteArray toBytes(bool pretty) const;

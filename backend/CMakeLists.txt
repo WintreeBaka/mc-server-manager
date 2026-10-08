@@ -3,6 +3,7 @@ set(MCSM_BACKEND_SOURCES
     src/cli/ArgParser.cpp
     src/cli/CommandRouter.cpp
     src/core/AppPaths.cpp
+    src/core/Archive.cpp
     src/core/JsonUtil.cpp
     src/core/Logger.cpp
     src/core/ProcessRunner.cpp
@@ -21,6 +22,8 @@ set(MCSM_BACKEND_SOURCES
     src/config/ConfigManager.cpp
     src/backup/BackupService.cpp
     src/plugin/PluginManager.cpp
+    src/plugin/PackageManager.cpp
+    src/plugin/PluginRuntime.cpp
     src/schedule/Scheduler.cpp
 )
 
@@ -28,6 +31,7 @@ set(MCSM_BACKEND_HEADERS
     src/cli/ArgParser.h
     src/cli/CommandRouter.h
     src/core/AppPaths.h
+    src/core/Archive.h
     src/core/JsonUtil.h
     src/core/Logger.h
     src/core/ProcessRunner.h
@@ -46,6 +50,8 @@ set(MCSM_BACKEND_HEADERS
     src/config/ConfigManager.h
     src/backup/BackupService.h
     src/plugin/PluginManager.h
+    src/plugin/PackageManager.h
+    src/plugin/PluginRuntime.h
     src/schedule/Scheduler.h
 )
 

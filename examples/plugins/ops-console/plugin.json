@@ -1,0 +1,26 @@
+{
+  "id": "com.example.ops-console",
+  "name": "运维面板示例",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "scope": "global",
+  "description": "全局插件示例：前端页面 + 后端 JSON-Line 服务 + Web 支持库面板（本地 HTTP 服务）。",
+  "author": "McServerManager",
+  "license": "MIT",
+  "permissions": ["ui.pages", "server.read", "network.listen"],
+  "frontend": {
+    "entry": "frontend/index.js"
+  },
+  "backend": {
+    "entry": "backend/index.js",
+    "runtime": "node",
+    "timeoutMs": 20000
+  },
+  "web": {
+    "entry": "web/index.html",
+    "service": "backend/server.js",
+    "port": 18765,
+    "title": "运维面板"
+  },
+  "hooks": ["plugin.install", "plugin.enable", "server.afterStart", "server.afterStop"]
+}

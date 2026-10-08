@@ -14,6 +14,7 @@
 #include "core/StringUtil.h"
 #include "docker/DockerManager.h"
 #include "docker/TemplateWriter.h"
+#include "plugin/PluginRuntime.h"
 #include "server/RconClient.h"
 
 namespace mcsm {
@@ -250,6 +251,22 @@ QStringList ServerLifecycle::logTail(const ServerRecord &record, int lines)
 
 StartOutcome ServerLifecycle::start(ServerStore &store, const QString &id, int waitSeconds)
 {
+    const ServerRecord before = store.get(id);
+    const StartOutcome outcome = startRecord(store, id, waitSeconds);
+    if (!before.id.isEmpty()) {
+        PluginRuntime::notify(
+            QStringLiteral("server.afterStart"),
+            PluginRuntime::serverPayload(
+                before, QJsonObject {{QStringLiteral("ok"), outcome.ok},
+                                     {QStringLiteral("status"), outcome.status},
+                                     {QStringLiteral("message"), outcome.message},
+                                     {QStringLiteral("elapsedMs"), double(outcome.elapsedMs)}}));
+    }
+    return outcome;
+}
+
+StartOutcome ServerLifecycle::startRecord(ServerStore &store, const QString &id, int waitSeconds)
+{
     StartOutcome outcome;
     QElapsedTimer timer;
     timer.start();
@@ -306,6 +323,18 @@ StartOutcome ServerLifecycle::start(ServerStore &store, const QString &id, int w
     }
 
     // keep generated files in sync with the record
+    // --- plugin packages: backend plugins may tune the JVM / container first --
+    const Result startPatch = PluginRuntime::refreshStartPatch(record);
+    if (!startPatch.isOk()) {
+        outcome.status = QStringLiteral("error");
+        outcome.message = startPatch.errorMessage();
+        outcome.hint = startPatch.errorDetail();
+        record.status = QStringLiteral("error");
+        record.lastError = outcome.message;
+        store.update(record);
+        return outcome;
+    }
+
     TemplateWriter::writeEula(record, true, nullptr);
     if (hostRuntime) {
         TemplateWriter::writeHostStartScript(record, nullptr);
@@ -541,11 +570,50 @@ StartOutcome ServerLifecycle::start(ServerStore &store, const QString &id, int w
     return outcome;
 }
 
+namespace {
+
+/// Runs `body` with the before/after plugin hooks around it. Plugin failures are
+/// folded into warnings: a broken plugin must never block the manager.
+template <typename Fn>
+Result withServerHooks(const ServerRecord &record, const QString &beforeHook,
+                       const QString &afterHook, Fn body)
+{
+    QStringList warnings;
+    if (!beforeHook.isEmpty()) {
+        const Result before =
+            PluginRuntime::notify(beforeHook, PluginRuntime::serverPayload(record));
+        warnings += before.warnings();
+    }
+    Result result = body();
+    if (!afterHook.isEmpty()) {
+        const QJsonObject extra {
+            {QStringLiteral("status"), result.data().value(QStringLiteral("status")).toString()},
+            {QStringLiteral("ok"), result.isOk()},
+        };
+        const Result after =
+            PluginRuntime::notify(afterHook, PluginRuntime::serverPayload(record, extra));
+        warnings += after.warnings();
+    }
+    for (const QString &warning : warnings)
+        result.warn(warning);
+    return result;
+}
+
+} // namespace
+
 Result ServerLifecycle::stop(ServerStore &store, const QString &id, bool force)
 {
     ServerRecord record = store.get(id);
     if (record.id.isEmpty())
         return Result::fail(QStringLiteral("NOT_FOUND"), QStringLiteral("服务器 %1 不存在").arg(id));
+    return withServerHooks(
+        record, QStringLiteral("server.beforeStop"), QStringLiteral("server.afterStop"),
+        [&store, record, force]() { return stopRecord(store, record, force); });
+}
+
+Result ServerLifecycle::stopRecord(ServerStore &store, ServerRecord record, bool force)
+{
+    const QString id = record.id;
 
     // experimental host runtime: stop the cloned-JDK process instead of a container
     if (record.usesHostJdk()) {

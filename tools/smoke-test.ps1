@@ -271,6 +271,162 @@ $badAction = Invoke-Cli @("server", "explode", "--id", $serverId) -AllowFailure
 Write-Result "unknown action rejected" ((-not $badAction.ok) -and $badAction.error.code -eq "UNKNOWN_ACTION") `
     ("code=" + $badAction.error.code)
 
+# ------------------------------------------------------- plugin packages ----
+# Extension packages: zip import, automatic scope detection, the JSON-line
+# backend protocol, enable/disable and uninstall. No Docker and no Node/Python
+# required - the probe backend is a .cmd script.
+Write-Host ""
+Write-Host "plugin packages" -ForegroundColor Cyan
+
+$zipTool = "third_party\7zip\7za.exe"
+if (Test-Path $zipTool) {
+    # absolute path: a bare "third_party\..." is treated as a module name by PowerShell
+    $zipTool = (Resolve-Path $zipTool).Path
+} else {
+    $systemZip = "C:\Program Files\7-Zip\7z.exe"
+    if (Test-Path $systemZip) { $zipTool = $systemZip } else { $zipTool = $null }
+}
+
+function New-PluginZip {
+    param(
+        [string]$Id,
+        [string]$Scope,
+        [hashtable]$Extra,
+        [string]$ZipPath
+    )
+    if (-not $zipTool) { return $false }
+    $stage = Join-Path $Assets "plugin-$Id"
+    if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+    $manifest = [ordered]@{
+        id          = $Id
+        name        = "Smoke $Id"
+        version     = "1.0.0"
+        apiVersion  = "1"
+        scope       = $Scope
+        description = "smoke test plugin"
+        author      = "smoke"
+        license     = "MIT"
+    }
+    foreach ($key in $Extra.Keys) { $manifest[$key] = $Extra[$key] }
+    $manifest | ConvertTo-Json -Depth 6 |
+        Set-Content -Path (Join-Path $stage "plugin.json") -Encoding UTF8
+
+    if ($Extra.Contains("frontend")) {
+        New-Item -ItemType Directory -Path (Join-Path $stage "frontend") -Force | Out-Null
+        Set-Content -Path (Join-Path $stage "frontend\index.js") `
+            -Value 'mcsm.ui.registerPage({ id: "smoke", title: "Smoke" });' -Encoding UTF8
+    }
+    if ($Extra.Contains("backend")) {
+        New-Item -ItemType Directory -Path (Join-Path $stage "backend") -Force | Out-Null
+        @(
+            '@echo off',
+            'set /p REQUEST=',
+            'echo {"ok":true,"data":{"probe":true},"patch":{"jvmArgs":["-XX:+UseG1GC"],"note":"smoke"}}'
+        ) | Set-Content -Path (Join-Path $stage "backend\probe.cmd") -Encoding ASCII
+    }
+
+    if (Test-Path $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
+    Push-Location $stage
+    try { & $zipTool a -tzip $ZipPath "." -y -bso0 -bsp0 | Out-Null } finally { Pop-Location }
+    return $true
+}
+
+if (-not $zipTool) {
+    Write-Result "plugin zip tool available" $false "neither bundled 7za.exe nor 7-Zip found"
+} else {
+    $frontZip = Join-Path $Assets "smoke-frontend.zip"
+    $backZip = Join-Path $Assets "smoke-backend.zip"
+    $globalZip = Join-Path $Assets "smoke-global.zip"
+    New-PluginZip -Id "smoke.ui" -Scope "auto" `
+        -Extra @{ frontend = @{ entry = "frontend/index.js" } } -ZipPath $frontZip | Out-Null
+    New-PluginZip -Id "smoke.backend" -Scope "auto" `
+        -Extra @{ backend = @{ entry = "backend/probe.cmd"; runtime = "exec" };
+                  hooks = @("server.beforeStart") } -ZipPath $backZip | Out-Null
+    New-PluginZip -Id "smoke.global" -Scope "auto" `
+        -Extra @{ frontend = @{ entry = "frontend/index.js" };
+                  backend = @{ entry = "backend/probe.cmd"; runtime = "exec" } } -ZipPath $globalZip | Out-Null
+
+    $inspectFront = Invoke-Cli @("plugin", "package", "inspect", "--zip", $frontZip)
+    Write-Result "plugin package inspect (frontend)" ($inspectFront.ok -and $inspectFront.data.scope -eq "frontend") `
+        ("scope=" + $inspectFront.data.scope)
+
+    $inspectBack = Invoke-Cli @("plugin", "package", "inspect", "--zip", $backZip)
+    Write-Result "plugin package inspect (backend)" ($inspectBack.ok -and $inspectBack.data.scope -eq "backend") `
+        ("scope=" + $inspectBack.data.scope)
+
+    $inspectGlobal = Invoke-Cli @("plugin", "package", "inspect", "--zip", $globalZip)
+    Write-Result "plugin package inspect auto detects global" `
+        ($inspectGlobal.ok -and $inspectGlobal.data.scope -eq "global" -and $inspectGlobal.data.hasWeb -eq $false) `
+        ("scope=" + $inspectGlobal.data.scope)
+
+    $api = Invoke-Cli @("plugin", "api")
+    Write-Result "plugin api manifest" ($api.ok -and $api.data.apiVersion -eq "1" -and $api.data.scopes.global) `
+        $api.error.message
+
+    $installFront = Invoke-Cli @("plugin", "package", "install", "--zip", $frontZip)
+    Write-Result "plugin package install (frontend)" `
+        ($installFront.ok -and $installFront.data.id -eq "smoke.ui" -and $installFront.data.scope -eq "frontend") `
+        $installFront.error.message
+    Write-Result "plugin files copied" `
+        (Test-Path (Join-Path $DataRoot "plugins\smoke.ui\plugin.json")) `
+        "plugin.json missing in the install directory"
+
+    $reinstall = Invoke-Cli @("plugin", "package", "install", "--zip", $frontZip) -AllowFailure
+    Write-Result "installing twice is refused" `
+        ((-not $reinstall.ok) -and $reinstall.error.code -eq "PLUGIN_EXISTS") ("code=" + $reinstall.error.code)
+
+    $forceInstall = Invoke-Cli @("plugin", "package", "install", "--zip", $frontZip, "--force")
+    Write-Result "--force replaces the plugin" ($forceInstall.ok -and $forceInstall.data.replaced -eq $true) `
+        $forceInstall.error.message
+
+    $installBack = Invoke-Cli @("plugin", "package", "install", "--zip", $backZip, "--disabled")
+    Write-Result "install --disabled keeps it off" ($installBack.ok -and $installBack.data.enabled -eq $false) `
+        $installBack.error.message
+
+    $packages = Invoke-Cli @("plugin", "packages")
+    Write-Result "plugin packages list" ($packages.ok -and $packages.data.count -eq 2) `
+        ("count=" + $packages.data.count)
+    Write-Result "registry reports scopes" `
+        (($packages.data.plugins | Where-Object { $_.id -eq "smoke.backend" }).scopeLabel.Length -gt 0) `
+        "scopeLabel missing"
+
+    $enable = Invoke-Cli @("plugin", "package", "enable", "--name", "smoke.backend")
+    Write-Result "plugin package enable" ($enable.ok -and $enable.data.enabled -eq $true) $enable.error.message
+
+    $call = Invoke-Cli @("plugin", "call", "--name", "smoke.backend", "--method", "server.beforeStart") -AllowFailure
+    Write-Result "backend plugin JSON-line call" `
+        ($call.ok -and $call.data.data.probe -eq $true -and $call.data.patch.jvmArgs[0] -eq "-XX:+UseG1GC") `
+        ($call.error.message + " " + $call.error.detail)
+
+    $info = Invoke-Cli @("plugin", "package", "info", "--name", "smoke.backend")
+    Write-Result "plugin package info" ($info.ok -and $info.data.launchCommand) $info.error.message
+
+    $disable = Invoke-Cli @("plugin", "package", "disable", "--name", "smoke.backend")
+    Write-Result "plugin package disable" ($disable.ok -and $disable.data.enabled -eq $false) $disable.error.message
+
+    $enabledOnly = Invoke-Cli @("plugin", "packages", "--enabled")
+    Write-Result "--enabled filters disabled plugins" `
+        ($enabledOnly.data.count -eq 1 -and $enabledOnly.data.enabledCount -eq 1) `
+        ("count=" + $enabledOnly.data.count)
+
+    $remove = Invoke-Cli @("plugin", "package", "remove", "--name", "smoke.ui")
+    Write-Result "plugin package remove" ($remove.ok -and $remove.data.removed -eq "smoke.ui") $remove.error.message
+    Write-Result "removed plugin directory is gone" `
+        (-not (Test-Path (Join-Path $DataRoot "plugins\smoke.ui"))) "directory still exists"
+
+    $missingPlugin = Invoke-Cli @("plugin", "package", "info", "--name", "smoke.none") -AllowFailure
+    Write-Result "unknown plugin returns NOT_FOUND" `
+        ((-not $missingPlugin.ok) -and $missingPlugin.error.code -eq "NOT_FOUND") `
+        ("code=" + $missingPlugin.error.code)
+
+    $badPackage = Invoke-Cli @("plugin", "package", "install", "--zip", $fakeJar) -AllowFailure
+    Write-Result "non zip package rejected" `
+        ((-not $badPackage.ok) -and $badPackage.error.code -eq "INVALID_PLUGIN_PACKAGE") `
+        ("code=" + $badPackage.error.code)
+}
+
 # ----------------------------------------------------------------- cleanup ----
 Write-Host ""
 Write-Host "cleanup" -ForegroundColor Cyan

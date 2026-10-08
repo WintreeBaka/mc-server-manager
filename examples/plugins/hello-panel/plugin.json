@@ -1,0 +1,25 @@
+{
+  "id": "com.example.hello-panel",
+  "name": "示例面板",
+  "version": "1.0.0",
+  "apiVersion": "1",
+  "scope": "frontend",
+  "description": "最小可用的前端扩展插件：注册一个页面，展示表格与按钮，并订阅事件刷新。",
+  "author": "McServerManager",
+  "homepage": "https://github.com/WintreeBaka/mc-server-manager",
+  "license": "MIT",
+  "permissions": ["ui.pages", "servers.read"],
+  "frontend": {
+    "entry": "frontend/index.js"
+  },
+  "contributes": {
+    "pages": [
+      {
+        "id": "hello-panel",
+        "title": "示例面板",
+        "icon": "★",
+        "subtitle": "前端插件演示：页面 / 表格 / 按钮 / 事件"
+      }
+    ]
+  }
+}

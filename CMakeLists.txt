@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 
 project(McServerManager
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Minecraft server manager (Docker based) with Qt frontend and CLI backend"
     LANGUAGES CXX)
 
@@ -28,7 +28,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
+# Qml provides QJSEngine: the plugin host runs plugin frontend scripts in it.
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network Qml)
 
 qt_standard_project_setup()
 

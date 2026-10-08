@@ -15,6 +15,8 @@
 
 namespace mcsm {
 
+class PluginHost;
+
 /// Application wide services: backend bridge, server list, theme, settings and
 /// the background poller that keeps container states fresh.
 class AppContext : public QObject
@@ -28,6 +30,8 @@ public:
     ThemeManager *theme() const { return ThemeManager::instance(); }
     ServerModel *servers() const { return m_servers; }
     QSettings *settings() const { return m_settings; }
+    /// Plugin packages: frontend script host plus the installed package list.
+    PluginHost *plugins() const { return m_plugins; }
 
     void bootstrap();
 
@@ -95,6 +99,7 @@ private:
 
     BackendClient *m_backend = nullptr;
     ServerModel *m_servers = nullptr;
+    PluginHost *m_plugins = nullptr;
     QSettings *m_settings = nullptr;
     QTimer m_pollTimer;
     QPointer<QProcess> m_daemon;

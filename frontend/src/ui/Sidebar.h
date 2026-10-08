@@ -13,6 +13,9 @@ public:
     explicit Sidebar(QWidget *parent = nullptr);
 
     void addItem(const QString &glyph, const QString &label, const QString &tooltip = QString());
+    /// Removes every trailing item so only `count` entries remain. Plugin pages
+    /// always append to the end, so this is enough to drop them again.
+    void truncate(int count);
     /// -1 clears the highlight (used when a page outside the sidebar is shown).
     void setCurrentIndex(int index);
     int currentIndex() const { return m_current; }

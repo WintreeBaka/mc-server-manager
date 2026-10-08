@@ -48,8 +48,23 @@
 - 配置文件：**快捷配置**（表单，35 项带说明）与**专家模式**（直接编辑原文，带语法检查）双模式
 - 每次保存配置前自动留档，可随时精确回滚（记录改动的 key / 原值 / 新值）
 - 备份：定时自动备份（间隔 / 保留份数 / 是否含插件 / 备份前是否先 `save-all`），手动快照，一键恢复
-- 插件：从 Modrinth / Hangar 搜索并一键安装，支持启停与删除
+- 服务器插件：从 Modrinth / Hangar 搜索并一键安装到某台服务器，支持启停与删除
 - 多服务器：每台服务器独立端口、内存、JDK 版本与备份计划
+
+**管理器插件（Plugin SDK）**
+
+管理器本身也可以被插件扩展，插件包支持 **本地 zip** 或 **URL** 导入，
+导入时自动识别作用域（前端 / 后端 / Web / 全局）：
+
+| 类型 | 能力 |
+| --- | --- |
+| 前端扩展 | 用 `mcsm.*` API 注册页面（表格 / 按钮 / 日志 / 富文本…），订阅事件，调用任意后端命令 |
+| 后端服务 | JSON-Line 钩子与自定义 RPC；`server.beforeStart` 可返回 JVM / 容器参数补丁 |
+| 支持库 / Web 面板 | 自带本地 HTTP 服务，管理器负责启动、停止并一键打开浏览器面板 |
+| 全局 | 同时含 `frontend/` 与 `backend/`，共享同一个 `plugin.json` |
+
+导入入口：**设置 → 插件扩展 → 添加插件**；命令行等价入口为 `mcsm-cli plugin package …`。
+解压使用随包内置的 7-Zip，目标机器无需安装压缩软件。详见 [`docs/PLUGIN-SDK.md`](docs/PLUGIN-SDK.md)。
 
 **界面**
 
@@ -57,6 +72,7 @@
 - 所有过渡动画使用贝塞尔曲线缓动，速度可调（或整体关闭）
 - 内置多种字体预设（HarmonyOS Sans SC / Noto Sans SC / 思源黑体 / 微软雅黑 UI / 等线），也可选用系统里的任意字体
 - 无边框窗口、自定义标题栏、平滑页面切换、Toast 提醒
+- 设置页左侧菜单固定尺寸：实验性功能开关与「返回主页」始终贴在窗口底部，内容再长也不会被滚走
 
 ## 界面截图
 
@@ -141,6 +157,16 @@ mcsm-cli server command --id 生存服 --command "say hi"
 mcsm-cli config apply --id 生存服 --values "{\"motd\":\"欢迎\"}"
 mcsm-cli backup create --id 生存服 --note "更新插件前"
 mcsm-cli daemon --interval 60                      # 常驻定时备份
+
+# 管理器插件（Plugin SDK）
+mcsm-cli plugin api                                # 导出机器可读的接口清单
+mcsm-cli plugin packages                           # 已安装的管理器插件
+mcsm-cli plugin package inspect --zip my-plugin-1.0.0.zip       # 只校验并识别作用域
+mcsm-cli plugin package install --zip my-plugin-1.0.0.zip
+mcsm-cli plugin package install --url https://example.com/my-plugin-1.0.0.zip --force
+mcsm-cli plugin package enable|disable|remove --name com.example.my-plugin
+mcsm-cli plugin call --name com.example.my-plugin --method summary
+mcsm-cli plugin service start --name com.example.ops-console     # 启动插件自带的 Web 面板
 ```
 
 完整命令列表见 [`docs/CLI.md`](docs/CLI.md)，协议说明见 [`docs/PROTOCOL.md`](docs/PROTOCOL.md)。
@@ -152,7 +178,9 @@ mcsm-cli daemon --interval 60                      # 常驻定时备份
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 目录结构、模块分工、数据流、设计取舍 |
 | [`docs/CLI.md`](docs/CLI.md) | 后端命令与参数完整参考 |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 前后端 JSON 协议、NDJSON 进度与日志流 |
+| [`docs/PLUGIN-SDK.md`](docs/PLUGIN-SDK.md) | **管理器插件接口**：包结构、`plugin.json` 全字段、前端 `mcsm.*` API、后端 JSON-Line 钩子与启动补丁、Web 面板、权限与调试 |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 常见问题与排查方法 |
+| [`examples/plugins/`](examples/plugins) | 三个可直接安装的示例插件（前端 / 后端 / 全局）+ 打包脚本 |
 | [`packaging/QUICKSTART.txt`](packaging/QUICKSTART.txt) | 面向最终用户的上手说明（随发行包分发） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本记录 |
 
@@ -166,8 +194,13 @@ McServerManager/
 ├─ servers.json            服务器注册表
 ├─ gui.ini                 界面设置（主题 / 字体 / 后端路径）
 ├─ logs/backend.log        后端诊断日志
+├─ plugins/                管理器插件包（Plugin SDK）
+│  ├─ registry.json        插件注册表（id / 版本 / 作用域 / 启用状态 / 来源）
+│  ├─ <插件 id>/           插件解压后的内容（含 install.json）
+│  └─ .data/<插件 id>/     插件私有数据
 └─ servers/<id>/           单个服务器目录（容器内挂载为 /data）
    ├─ server.jar  server.properties  eula.txt  start.sh  docker-compose.yml
+   ├─ .mcsm/              管理器内部状态（含 start-patch.json 插件启动补丁）
    ├─ plugins/            插件目录
    ├─ backups/            存档归档 + index.json
    ├─ config-backups/     server.properties 历史版本 + index.json
@@ -178,12 +211,31 @@ McServerManager/
 
 ```bash
 python tools/static_check.py       # 源码一致性检查（include / 括号 / 声明实现 / 编码陷阱 / CMake 清单）
-powershell -File tools/smoke-test.ps1   # 后端冒烟测试（37 项，不需要 Docker）
+powershell -File tools/smoke-test.ps1   # 后端冒烟测试（56 项，含插件包回归，不需要 Docker）
 powershell -File tools/gui-smoke.ps1    # 界面冒烟测试（启动、拖拽、快速切页残留对比、截图）
+powershell -File tools/gui-smoke.ps1 -Page settings-runtime -Resize 1100x700 -Screenshot small.png   # 小窗口布局回归
 python tools/check-endpoints.py    # 检查上游 API（Mojang / Paper / Purpur / Fabric / Modrinth…）可用性
 python tools/rcon-probe.py 127.0.0.1 25575 <密码>   # RCON 协议探针
 python tools/host-runtime-check.py  # 实验性「本机 JDK」模式端到端检查
 ```
+
+## 打包发行版
+
+```powershell
+.\scripts\build-windows.ps1 -QtDir "D:\qt\6.11.2\mingw_64" -Deploy
+
+.\tools\package-release.ps1                       # 纯程序版
+.\tools\package-release.ps1 -Flavor with-plugins  # 额外带 plugin-packages\（示例插件 zip，可直接导入）
+```
+
+两个风味刻意使用不同名字（`McServerManager-<版本>-win64` 与 `…-win64-with-plugins`），
+避免重新生成纯程序版时把带插件的测试包覆盖掉。
+
+## 开发提示
+
+- 新增设置页时，把左侧菜单放进 `PageBase::setSideColumn()` 的固定列里（不要放进 `body()`），
+  否则内容变长后菜单会被一起滚走。
+- 编码：界面文本用 `QStringLiteral`，不要用 `QLatin1String` 包中文；`tools/static_check.py` 有对应检查。
 
 ## 实验性功能
 

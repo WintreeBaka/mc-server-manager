@@ -777,7 +777,27 @@ PageBase::PageBase(const QString &title, const QString &subtitle, QWidget *paren
     m_body->setContentsMargins(0, 0, 14, 8);
     m_body->setSpacing(16);
     m_scroll->setWidget(m_content);
-    root->addWidget(m_scroll, 1);
+
+    // header, then [optional fixed side column | scrolling body]
+    m_bodyRow = new QHBoxLayout();
+    m_bodyRow->setContentsMargins(0, 0, 0, 0);
+    m_bodyRow->setSpacing(16);
+    m_bodyRow->addWidget(m_scroll, 1);
+    root->addLayout(m_bodyRow, 1);
+}
+
+void PageBase::setSideColumn(QWidget *widget)
+{
+    if (!m_bodyRow || !widget)
+        return;
+    if (m_sideColumn) {
+        m_bodyRow->removeWidget(m_sideColumn);
+        m_sideColumn->setParent(nullptr);
+        m_sideColumn->deleteLater();
+    }
+    m_sideColumn = widget;
+    widget->setParent(this);
+    m_bodyRow->insertWidget(0, widget, 0);
 }
 
 void PageBase::resizeEvent(QResizeEvent *event)

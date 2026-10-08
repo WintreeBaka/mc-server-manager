@@ -11,6 +11,7 @@
 #include "config/ConfigManager.h"
 #include "config/ConfigSchema.h"
 #include "core/AppPaths.h"
+#include "core/Archive.h"
 #include "core/Logger.h"
 #include "core/ProcessRunner.h"
 #include "core/StringUtil.h"
@@ -19,7 +20,9 @@
 #include "java/JavaManager.h"
 #include "net/HttpClient.h"
 #include "net/VersionResolver.h"
+#include "plugin/PackageManager.h"
 #include "plugin/PluginManager.h"
+#include "plugin/PluginRuntime.h"
 #include "schedule/Scheduler.h"
 #include "server/ServerInstaller.h"
 #include "server/ServerLifecycle.h"
@@ -61,6 +64,14 @@ QStringList CommandRouter::helpLines() const
         QStringLiteral("  config apply --id X --values '{...}' | --values-file values.json"),
         QStringLiteral("  backup list|create|restore|remove|schedule --id X"),
         QStringLiteral("  plugin sources|search|install|list|remove|toggle --id X"),
+        QStringLiteral("  plugin packages [--enabled]                  已安装的扩展插件包"),
+        QStringLiteral("  plugin package install --zip <file> | --url <url> [--force]"),
+        QStringLiteral("  plugin package info|enable|disable|remove --name <plugin-id>"),
+        QStringLiteral("  plugin package inspect --zip <file>          预览插件包（不安装）"),
+        QStringLiteral("  plugin call --name <id> --method <name> [--params '{...}']"),
+        QStringLiteral("  plugin hook --name <id>|--all --hook <name> [--payload '{...}']"),
+        QStringLiteral("  plugin service start|stop|status --name <id> 支持库 / Web 面板服务"),
+        QStringLiteral("  plugin api                                  插件接口清单（机器可读）"),
         QStringLiteral("  schedule tick|status                     定时备份守护进程"),
         QStringLiteral("  settings get|set"),
         QString(),
@@ -635,6 +646,15 @@ Result CommandRouter::cmdPlugin()
             {QStringLiteral("sources"), QJsonArray::fromStringList(PluginManager::sources())},
         });
     }
+    // Extension packages are global (they are not tied to one Minecraft
+    // server), so they are handled before the server lookup below.
+    if (action == QLatin1String("api"))
+        return Result::ok(PackageManager::apiManifest());
+    if (action == QLatin1String("packages") || action == QLatin1String("package")
+        || action == QLatin1String("service") || action == QLatin1String("call")
+        || action == QLatin1String("hook")) {
+        return cmdPluginPackage();
+    }
 
     const ServerRecord record = store.get(id);
     if (record.id.isEmpty())
@@ -697,6 +717,261 @@ Result CommandRouter::cmdPlugin()
     }
     return Result::fail(QStringLiteral("UNKNOWN_ACTION"),
                         QStringLiteral("未知 plugin 子命令 '%1'").arg(action));
+}
+
+Result CommandRouter::cmdPluginPackage()
+{
+    const QString action = m_args.positional(1, QStringLiteral("packages"));
+    const QString sub = m_args.positional(2).toLower();
+    const QString name = m_args.value(QStringLiteral("name"), m_args.value(QStringLiteral("id")));
+
+    const auto withToolInfo = [](QJsonObject object) {
+        object.insert(QStringLiteral("apiVersion"), PackageManager::apiVersion());
+        object.insert(QStringLiteral("pluginsDir"), AppPaths::pluginsDir());
+        object.insert(QStringLiteral("extractor"), Archive::toolDescription());
+        return object;
+    };
+
+    if (action == QLatin1String("packages")) {
+        QJsonArray array;
+        // `--enabled` filters down to the plugins that are switched on
+        const bool includeDisabled = !m_args.boolValue(QStringLiteral("enabled"), false);
+        for (const PluginManifest &manifest : PackageManager::installed(includeDisabled))
+            array.append(manifest.toJson());
+        return Result::ok(withToolInfo(QJsonObject {
+            {QStringLiteral("plugins"), array},
+            {QStringLiteral("count"), array.size()},
+            {QStringLiteral("enabledCount"),
+             [&array]() {
+                 int enabled = 0;
+                 for (const QJsonValue &value : array)
+                     if (value.toObject().value(QStringLiteral("enabled")).toBool())
+                         ++enabled;
+                 return enabled;
+             }()},
+            {QStringLiteral("registryFile"), AppPaths::pluginRegistryFile()},
+        }));
+    }
+
+    if (action == QLatin1String("package")) {
+        if (sub == QLatin1String("install") || sub == QLatin1String("add")) {
+            PluginInstallRequest request;
+            request.zipPath = m_args.value(QStringLiteral("zip"), m_args.value(QStringLiteral("file")));
+            request.url = m_args.value(QStringLiteral("url"));
+            request.expectId = m_args.value(QStringLiteral("expect"));
+            request.force = m_args.boolValue(QStringLiteral("force"), false);
+            request.enable = !m_args.boolValue(QStringLiteral("disabled"), false);
+            Result result = PackageManager::install(request);
+            if (!result.isOk())
+                return result;
+
+            const QString pluginId = result.data().value(QStringLiteral("id")).toString();
+            Result hooks = PluginRuntime::notify(
+                QStringLiteral("plugin.install"),
+                QJsonObject {{QStringLiteral("plugin"), result.data()},
+                             {QStringLiteral("source"),
+                              m_args.value(QStringLiteral("url")).isEmpty()
+                                  ? QStringLiteral("zip")
+                                  : QStringLiteral("url")}});
+            for (const QString &warning : hooks.warnings())
+                result.warn(warning);
+            if (!pluginId.isEmpty())
+                result.warn(QStringLiteral("使用 `mcsm-cli plugin package info --name %1` 查看详情")
+                                .arg(pluginId));
+            return result.with(withToolInfo(QJsonObject()));
+        }
+        if (sub == QLatin1String("list") || sub.isEmpty()) {
+            QJsonArray array;
+            for (const PluginManifest &manifest : PackageManager::installed(
+                     !m_args.boolValue(QStringLiteral("enabled"), false)))
+                array.append(manifest.toJson());
+            return Result::ok(withToolInfo(QJsonObject {{QStringLiteral("plugins"), array},
+                                                        {QStringLiteral("count"), array.size()}}));
+        }
+        if (sub == QLatin1String("info") || sub == QLatin1String("show")) {
+            const PluginManifest manifest = PackageManager::find(name);
+            if (manifest.id.isEmpty())
+                return Result::fail(QStringLiteral("NOT_FOUND"),
+                                    QStringLiteral("插件 %1 未安装").arg(name));
+            QJsonObject data = manifest.toJson();
+            QString runtimeError;
+            data.insert(QStringLiteral("launchCommand"),
+                        PluginRuntime::describeRuntime(manifest, &runtimeError));
+            if (!runtimeError.isEmpty())
+                data.insert(QStringLiteral("launchError"), runtimeError);
+            QJsonObject service = PluginRuntime::serviceStatus(manifest.id).data();
+            if (!service.isEmpty())
+                data.insert(QStringLiteral("service"), service);
+            return Result::ok(withToolInfo(data));
+        }
+        if (sub == QLatin1String("inspect") || sub == QLatin1String("check")) {
+            const QString zip = m_args.value(QStringLiteral("zip"), m_args.value(QStringLiteral("file")));
+            const QString url = m_args.value(QStringLiteral("url"));
+            if (zip.isEmpty() && url.isEmpty())
+                return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                    QStringLiteral("缺少 --zip 或 --url"));
+            const QString staging = QDir(AppPaths::tmpDir())
+                                        .filePath(QStringLiteral("plugin-inspect-%1")
+                                                      .arg(StringUtil::randomToken(8)));
+            QDir().mkpath(staging);
+            QString archivePath = zip;
+            if (!url.isEmpty()) {
+                archivePath = QDir(staging).filePath(QStringLiteral("source.zip"));
+                QString downloadError;
+                if (!HttpClient::download(QUrl(url), archivePath, &downloadError)) {
+                    Archive::removeTree(staging, nullptr);
+                    return Result::fail(QStringLiteral("PLUGIN_DOWNLOAD_FAILED"),
+                                        QStringLiteral("插件包下载失败"), downloadError);
+                }
+            }
+            const QString extractDir = QDir(staging).filePath(QStringLiteral("extract"));
+            QString extractError;
+            if (!Archive::extractZip(archivePath, extractDir, &extractError)) {
+                Archive::removeTree(staging, nullptr);
+                return Result::fail(QStringLiteral("PLUGIN_EXTRACT_FAILED"),
+                                    QStringLiteral("解压插件包失败"), extractError);
+            }
+            QString inspectError;
+            const PluginValidation validation = PackageManager::inspectDirectory(extractDir, &inspectError);
+            PluginManifest manifest = validation.manifest;
+            QJsonObject data = manifest.toJson();
+            data.insert(QStringLiteral("valid"), validation.ok);
+            data.insert(QStringLiteral("errors"), QJsonArray::fromStringList(validation.errors));
+            data.insert(QStringLiteral("problems"), QJsonArray::fromStringList(validation.warnings));
+            data.insert(QStringLiteral("alreadyInstalled"),
+                        !manifest.id.isEmpty() && PackageManager::exists(manifest.id));
+            Archive::removeTree(staging, nullptr);
+            Result result = Result::ok(withToolInfo(data));
+            for (const QString &warning : validation.warnings)
+                result.warn(warning);
+            if (!validation.ok) {
+                Result failure = Result::fail(QStringLiteral("INVALID_PLUGIN_PACKAGE"),
+                                              QStringLiteral("插件包校验未通过"),
+                                              validation.errors.join(QStringLiteral("\n")));
+                failure.with(withToolInfo(data));
+                return failure;
+            }
+            return result;
+        }
+        if (sub == QLatin1String("enable") || sub == QLatin1String("disable")) {
+            const bool enable = sub == QLatin1String("enable");
+            if (name.isEmpty())
+                return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                    QStringLiteral("缺少 --name <插件 id>"));
+            if (!enable) {
+                Result before = PluginRuntime::notify(
+                    QStringLiteral("plugin.disable"),
+                    QJsonObject {{QStringLiteral("plugin"),
+                                  QJsonObject {{QStringLiteral("id"), name}}}});
+                Result state = PackageManager::setEnabled(name, false);
+                for (const QString &warning : before.warnings())
+                    state.warn(warning);
+                return state;
+            }
+            Result state = PackageManager::setEnabled(name, true);
+            if (!state.isOk())
+                return state;
+            Result after = PluginRuntime::notify(
+                QStringLiteral("plugin.enable"),
+                QJsonObject {{QStringLiteral("plugin"), state.data()}});
+            for (const QString &warning : after.warnings())
+                state.warn(warning);
+            return state;
+        }
+        if (sub == QLatin1String("remove") || sub == QLatin1String("uninstall")
+            || sub == QLatin1String("delete")) {
+            if (name.isEmpty())
+                return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                    QStringLiteral("缺少 --name <插件 id>"));
+            const PluginManifest manifest = PackageManager::find(name);
+            if (manifest.id.isEmpty())
+                return Result::fail(QStringLiteral("NOT_FOUND"),
+                                    QStringLiteral("插件 %1 未安装").arg(name));
+            PluginRuntime::serviceStop(manifest.id);
+            Result hooks = PluginRuntime::notify(
+                QStringLiteral("plugin.uninstall"),
+                QJsonObject {{QStringLiteral("plugin"), manifest.toJson()},
+                             {QStringLiteral("purgeData"),
+                              m_args.boolValue(QStringLiteral("purge-data"), false)}});
+            Result result = PackageManager::remove(manifest.id,
+                                                   m_args.boolValue(QStringLiteral("purge-data"), false));
+            for (const QString &warning : hooks.warnings())
+                result.warn(warning);
+            return result;
+        }
+        return Result::fail(QStringLiteral("UNKNOWN_ACTION"),
+                            QStringLiteral("未知 plugin package 子命令 '%1'").arg(sub));
+    }
+
+    // ------------------------------------------------------------- call ------
+    if (action == QLatin1String("call") || action == QLatin1String("invoke")) {
+        if (name.isEmpty())
+            return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                QStringLiteral("缺少 --name <插件 id>"));
+        const QString method = m_args.value(QStringLiteral("method"), m_args.value(QStringLiteral("call")));
+        if (method.isEmpty())
+            return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                QStringLiteral("缺少 --method <方法名>"));
+        const PluginManifest manifest = PackageManager::find(name);
+        if (manifest.id.isEmpty())
+            return Result::fail(QStringLiteral("NOT_FOUND"),
+                                QStringLiteral("插件 %1 未安装").arg(name));
+        const PluginCallOutcome outcome =
+            PluginRuntime::call(manifest, method, m_args.jsonObject(QStringLiteral("params")),
+                                m_args.intValue(QStringLiteral("timeout"), 30000));
+        if (!outcome.ok) {
+            Result failure = Result::fail(outcome.code, outcome.message, outcome.detail);
+            failure.with(outcome.toJson());
+            return failure;
+        }
+        Result result = Result::ok(outcome.toJson());
+        for (const QString &warning : outcome.warnings)
+            result.warn(warning);
+        return result;
+    }
+
+    // ------------------------------------------------------------- hook ------
+    if (action == QLatin1String("hook")) {
+        const QString hook = m_args.value(QStringLiteral("hook"), m_args.value(QStringLiteral("event")));
+        if (hook.isEmpty())
+            return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                QStringLiteral("缺少 --hook <钩子名>"));
+        const QJsonObject payload = m_args.jsonObject(QStringLiteral("payload"));
+        if (m_args.boolValue(QStringLiteral("all"), false) || name.isEmpty()) {
+            Result result = PluginRuntime::notify(hook, payload);
+            return result;
+        }
+        const PluginManifest manifest = PackageManager::find(name);
+        if (manifest.id.isEmpty())
+            return Result::fail(QStringLiteral("NOT_FOUND"),
+                                QStringLiteral("插件 %1 未安装").arg(name));
+        const PluginCallOutcome outcome =
+            PluginRuntime::call(manifest, hook, payload, m_args.intValue(QStringLiteral("timeout"), 30000));
+        if (!outcome.ok) {
+            Result failure = Result::fail(outcome.code, outcome.message, outcome.detail);
+            failure.with(outcome.toJson());
+            return failure;
+        }
+        return Result::ok(outcome.toJson());
+    }
+
+    // ---------------------------------------------------------- service ------
+    if (action == QLatin1String("service")) {
+        if (name.isEmpty())
+            return Result::fail(QStringLiteral("INVALID_ARGUMENT"),
+                                QStringLiteral("缺少 --name <插件 id>"));
+        if (sub == QLatin1String("start"))
+            return PluginRuntime::serviceStart(name);
+        if (sub == QLatin1String("stop"))
+            return PluginRuntime::serviceStop(name);
+        if (sub == QLatin1String("status") || sub.isEmpty())
+            return PluginRuntime::serviceStatus(name);
+        return Result::fail(QStringLiteral("UNKNOWN_ACTION"),
+                            QStringLiteral("未知 plugin service 子命令 '%1'").arg(sub));
+    }
+
+    return Result::fail(QStringLiteral("UNKNOWN_COMMAND"),
+                        QStringLiteral("未知 plugin 命令 '%1'").arg(action));
 }
 
 Result CommandRouter::cmdSchedule()

@@ -266,6 +266,9 @@ protected:
     /// Layout that page content should be appended to.
     QVBoxLayout *body() const { return m_body; }
     void setHeaderTrailing(QWidget *widget);
+    /// Puts `widget` in a column LEFT of the scrolling body. That column never
+    /// scrolls, so a page menu stays visible no matter how long the content is.
+    void setSideColumn(QWidget *widget);
 
 private:
     QString m_title;
@@ -276,6 +279,8 @@ private:
     QLabel *m_titleLabel = nullptr;
     QLabel *m_subtitleLabel = nullptr;
     QHBoxLayout *m_headerLayout = nullptr;
+    QHBoxLayout *m_bodyRow = nullptr;
+    QWidget *m_sideColumn = nullptr;
 };
 
 } // namespace mcsm

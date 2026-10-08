@@ -20,6 +20,7 @@
 
 #include "app/AppContext.h"
 #include "app/Easing.h"
+#include "pages/PluginExtensionsPage.h"
 #include "widgets/Chip.h"
 
 namespace mcsm {
@@ -72,22 +73,25 @@ SettingsPage::SettingsPage(QWidget *parent)
     : PageBase(QStringLiteral("设置"),
                QStringLiteral("外观、运行环境与实验性功能都在这里调整"), parent)
 {
-    auto *columns = new QHBoxLayout();
-    columns->setSpacing(16);
-    columns->addWidget(buildNavCard(), 0);
-
+    // The menu lives in the fixed side column: it must never scroll away with the
+    // (often long) settings content, and 实验性功能 / 返回主页 stay pinned near the
+    // bottom edge of the window.
+    setSideColumn(buildNavCard());
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildAppearancePage());
+    m_stack->addWidget(buildPluginPage());
     m_stack->addWidget(buildRuntimePage());
     m_stack->addWidget(buildExperimentalPage());
-    columns->addWidget(m_stack, 1);
-    body()->addLayout(columns, 1);
+    body()->addWidget(m_stack, 1);
 
     AppContext *context = AppContext::instance();
     connect(context, &AppContext::themeChanged, this, [this]() {
         m_themeSwitch->setCurrentIndex(ThemeManager::instance()->isDark() ? 0 : 1, false);
     });
-    connect(context, &AppContext::experimentalChanged, this, [this](bool) { updateNavState(); });
+    connect(context, &AppContext::experimentalChanged, this, [this](bool) {
+        updateNavState();
+        updateJdkSection();
+    });
     connect(context->backend(), &BackendClient::availabilityChanged, this, [this](bool available) {
         m_backendStatus->setText(available ? QStringLiteral("✔ 后端可用")
                                            : QStringLiteral("✕ 未找到 mcsm-cli"));
@@ -105,8 +109,8 @@ QWidget *SettingsPage::buildNavCard()
     card->setFixedWidth(190);
     auto *layout = CardFrame::verticalLayout(card, 14, 8);
 
-    const QStringList labels = {QStringLiteral("外观"), QStringLiteral("运行环境"),
-                                QStringLiteral("实验性功能")};
+    const QStringList labels = {QStringLiteral("外观"), QStringLiteral("插件扩展"),
+                                QStringLiteral("运行环境"), QStringLiteral("实验性功能")};
     for (int i = 0; i < labels.size(); ++i) {
         auto *button = new GradientButton(labels.at(i), card);
         button->setStyle(GradientButton::Outline);
@@ -137,9 +141,10 @@ QWidget *SettingsPage::buildNavCard()
         AppContext::instance()->logActivity(
             checked ? QStringLiteral("已开启实验性功能") : QStringLiteral("已关闭实验性功能"),
             QStringLiteral("info"));
-        if (!checked && m_section == 2)
+        if (!checked && m_section == 3)
             setSection(0);
         updateNavState();
+        updateJdkSection();
     });
 
     auto *back = new GradientButton(QStringLiteral("返回主页"), card);
@@ -154,22 +159,27 @@ void SettingsPage::setSection(int index)
 {
     if (index < 0 || index >= m_stack->count())
         return;
-    if (index == 2 && !AppContext::instance()->experimentalEnabled())
+    if (index == 3 && !AppContext::instance()->experimentalEnabled())
         return;
     m_section = index;
     m_stack->setCurrentIndex(index);
     updateNavState();
-    if (index == 2)
-        refreshJdkList();
-    else if (index == 1)
+    if (index == 2) {
         detectEnvironment();
+        updateJdkSection();
+        // fill the JDK list the first time so the card is not an empty box
+        if (!m_jdkScanned && !m_scanning)
+            refreshJdkList();
+    } else if (index == 1 && m_pluginsPage) {
+        m_pluginsPage->refresh();
+    }
 }
 
 void SettingsPage::updateNavState()
 {
     const bool experimental = AppContext::instance()->experimentalEnabled();
-    if (m_navButtons.size() > 2)
-        m_navButtons.at(2)->setVisible(experimental);
+    if (m_navButtons.size() > 3)
+        m_navButtons.at(3)->setVisible(experimental);
     for (int i = 0; i < m_navButtons.size(); ++i) {
         const bool active = i == m_section;
         m_navButtons.at(i)->setStyle(active ? GradientButton::Primary : GradientButton::Outline);
@@ -178,6 +188,20 @@ void SettingsPage::updateNavState()
 
 // ------------------------------------------------------------------- pages ----
 
+void SettingsPage::showSection(const QString &name)
+{
+    const QString key = name.trimmed().toLower();
+    if (key == QLatin1String("plugins") || key == QLatin1String("plugin")
+        || key == QLatin1String("extensions"))
+        setSection(1);
+    else if (key == QLatin1String("runtime") || key == QLatin1String("environment"))
+        setSection(2);
+    else if (key == QLatin1String("experimental"))
+        setSection(3);
+    else
+        setSection(0);
+}
+
 QWidget *SettingsPage::buildAppearancePage()
 {
     return wrapPage({buildAppearanceCard()}, this);
@@ -185,44 +209,93 @@ QWidget *SettingsPage::buildAppearancePage()
 
 QWidget *SettingsPage::buildRuntimePage()
 {
-    return wrapPage({buildBackendCard(), buildEnvironmentCard(), buildAboutCard()}, this);
+    // the host JDK scanner used to live on the experimental page; it is a runtime
+    // topic, so it now sits next to the backend / environment cards
+    return wrapPage({buildBackendCard(), buildJdkCard(), buildEnvironmentCard(), buildAboutCard()},
+                    this);
+}
+
+QWidget *SettingsPage::buildPluginPage()
+{
+    m_pluginsPage = new PluginExtensionsPage(this);
+    return wrapPage({m_pluginsPage}, this);
 }
 
 QWidget *SettingsPage::buildExperimentalPage()
 {
+    // 实验性功能页面：内容暂时留空，等后续实验性能力确定后再填入。
     auto *card = new CardFrame(this);
     auto *layout = CardFrame::verticalLayout(card, 20, 14);
     layout->addWidget(makeSectionHeader(
-        QStringLiteral("本机 JDK"),
+        QStringLiteral("实验性功能"),
+        QStringLiteral("这里预留给还在打磨中的能力，目前暂时为空"),
+        nullptr, card));
+    auto *placeholder = makeLabel(
+        QStringLiteral("暂时没有实验性内容。\n\n"
+                       "当前已开放的实验性能力是「本机 JDK」，它属于运行环境的一部分，"
+                       "已经移动到「运行环境」页面：在那里可以扫描本机已安装的 JDK，"
+                       "新建服务器时选择克隆一份直接运行（不经过 Docker 容器）。"),
+        QStringLiteral("hint"), card);
+    placeholder->setWordWrap(true);
+    layout->addWidget(placeholder);
+    return wrapPage({card}, this);
+}
+
+QWidget *SettingsPage::buildJdkCard()
+{
+    auto *card = new CardFrame(this);
+    auto *layout = CardFrame::verticalLayout(card, 20, 14);
+    layout->addWidget(makeSectionHeader(
+        QStringLiteral("本机 JDK（实验性）"),
         QStringLiteral("扫描这台电脑上已安装的 JDK，创建服务器时可克隆一份使用（不再依赖容器）"),
         nullptr, card));
 
-    auto *explain = makeLabel(
+    m_jdkGateHint = makeLabel(
+        QStringLiteral("「本机 JDK」属于实验性功能：请先在左侧「实验性功能」中打开开关，这里才会显示扫描结果。"),
+        QStringLiteral("hint"), card);
+    m_jdkGateHint->setWordWrap(true);
+    layout->addWidget(m_jdkGateHint);
+
+    m_jdkExplain = makeLabel(
         QStringLiteral("开启后，新建服务器时可以选择「本机 JDK」：管理器会把所选 JDK 完整复制到该服务器目录下，"
                        "服务器将直接在这台电脑上运行（不经过 Docker 容器），控制台、RCON、备份等功能保持不变。"),
         QStringLiteral("hint"), card);
-    explain->setWordWrap(true);
-    layout->addWidget(explain);
+    m_jdkExplain->setWordWrap(true);
+    layout->addWidget(m_jdkExplain);
 
     auto *toolbar = new QHBoxLayout();
     toolbar->setSpacing(10);
-    m_jdkHint = makeLabel(QStringLiteral("尚未扫描"), QStringLiteral("hint"), card);
-    auto *scan = new GradientButton(QStringLiteral("重新扫描"), card);
-    scan->setStyle(GradientButton::Outline);
-    scan->setCompact(true);
+    m_jdkHint = makeLabel(QStringLiteral("点击「重新扫描」查看本机已安装的 JDK"), QStringLiteral("hint"),
+                          card);
+    m_jdkScan = new GradientButton(QStringLiteral("重新扫描"), card);
+    m_jdkScan->setStyle(GradientButton::Outline);
+    m_jdkScan->setCompact(true);
     toolbar->addWidget(m_jdkHint, 1);
-    toolbar->addWidget(scan);
+    toolbar->addWidget(m_jdkScan);
     layout->addLayout(toolbar);
 
     m_jdkList = new QListWidget(card);
     m_jdkList->setFrameShape(QFrame::NoFrame);
     m_jdkList->setSpacing(6);
-    m_jdkList->setMinimumHeight(240);
+    m_jdkList->setMinimumHeight(150);
     m_jdkList->setStyleSheet(QStringLiteral("QListWidget { background: transparent; border: none; }"));
     layout->addWidget(m_jdkList, 1);
 
-    connect(scan, &QPushButton::clicked, this, &SettingsPage::refreshJdkList);
+    connect(m_jdkScan, &QPushButton::clicked, this, &SettingsPage::refreshJdkList);
+    updateJdkSection();
     return card;
+}
+
+void SettingsPage::updateJdkSection()
+{
+    if (!m_jdkList)
+        return;
+    const bool enabled = AppContext::instance()->experimentalEnabled();
+    m_jdkGateHint->setVisible(!enabled);
+    m_jdkExplain->setVisible(enabled);
+    m_jdkHint->setVisible(enabled);
+    m_jdkScan->setVisible(enabled);
+    m_jdkList->setVisible(enabled);
 }
 
 void SettingsPage::refreshJdkList()
@@ -237,6 +310,7 @@ void SettingsPage::refreshJdkList()
         {QStringLiteral("java"), QStringLiteral("--action"), QStringLiteral("scan")}, this,
         [this](const Reply &reply) {
             m_scanning = false;
+            m_jdkScanned = true;
             if (!reply.ok) {
                 m_jdkHint->setText(QStringLiteral("扫描失败：%1").arg(reply.errorText()));
                 return;

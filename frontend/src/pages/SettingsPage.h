@@ -16,6 +16,8 @@ class QListWidget;
 
 namespace mcsm {
 
+class PluginExtensionsPage;
+
 /// Settings with their own left hand menu. The main navigation is hidden while
 /// this page is visible, so the sections live here instead.
 class SettingsPage : public PageBase
@@ -26,6 +28,8 @@ public:
     explicit SettingsPage(QWidget *parent = nullptr);
 
     void onActivated() override;
+    /// Switches to a section by name: appearance | plugins | runtime | experimental.
+    void showSection(const QString &name);
 
 signals:
     /// Emitted by the "返回主页" entry in the settings menu.
@@ -34,17 +38,21 @@ signals:
 private:
     QWidget *buildNavCard();
     QWidget *buildAppearancePage();
+    QWidget *buildPluginPage();
     QWidget *buildRuntimePage();
     QWidget *buildExperimentalPage();
 
     QWidget *buildAppearanceCard();
     QWidget *buildBackendCard();
+    QWidget *buildJdkCard();
     QWidget *buildEnvironmentCard();
     QWidget *buildAboutCard();
 
     void setSection(int index);
     void updateNavState();
     void refreshJdkList();
+    /// Enables / disables the host JDK card depending on the experimental switch.
+    void updateJdkSection();
     void detectEnvironment();
     void browseBackend();
     void applyDataHome(const QString &path);
@@ -54,6 +62,7 @@ private:
     void syncFontControls();
 
     QVector<GradientButton *> m_navButtons;
+    PluginExtensionsPage *m_pluginsPage = nullptr;
     QStackedWidget *m_stack = nullptr;
     ToggleSwitch *m_experimentalSwitch = nullptr;
     int m_section = 0;
@@ -85,7 +94,11 @@ private:
 
     QListWidget *m_jdkList = nullptr;
     QLabel *m_jdkHint = nullptr;
+    QLabel *m_jdkGateHint = nullptr;
+    QLabel *m_jdkExplain = nullptr;
+    GradientButton *m_jdkScan = nullptr;
     bool m_scanning = false;
+    bool m_jdkScanned = false;
     bool m_syncingAppearance = false;
 };
 

@@ -22,9 +22,13 @@ public:
     explicit AnimatedStack(QWidget *parent = nullptr);
 
     void addPage(QWidget *page);
+    /// Detaches and deletes a contributed page. Used when plugins are reloaded
+    /// or uninstalled: indices of the remaining pages stay consistent.
+    void removePage(QWidget *page);
     QWidget *page(int index) const;
     int count() const { return m_pages.size(); }
     int currentIndex() const { return m_current; }
+    void setCurrentIndexSilently(int index);
     QWidget *currentWidget() const;
 
     /// Direction: -1 = new page enters from the left, 1 = from the right,

@@ -33,6 +33,20 @@ void Sidebar::setCurrentIndex(int index)
     update();
 }
 
+void Sidebar::truncate(int count)
+{
+    const int keep = qBound(0, count, m_items.size());
+    if (keep == m_items.size())
+        return;
+    m_items.resize(keep);
+    if (m_current >= keep)
+        m_current = keep > 0 ? keep - 1 : -1;
+    if (m_hovered >= keep)
+        m_hovered = -1;
+    updateGeometry();
+    update();
+}
+
 QRectF Sidebar::itemRect(int index) const
 {
     return QRectF(10, m_topPadding + m_itemHeight * index, width() - 20, m_itemHeight - 8);

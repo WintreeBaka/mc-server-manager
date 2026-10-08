@@ -43,6 +43,14 @@ public:
 
     /// Scans the container log for well known failure signatures.
     static QString detectFailure(const QString &logText);
+
+private:
+    /// Implementation of start(): wrapped by start() so the `server.afterStart`
+    /// plugin hook runs for every attempt, successful or not.
+    static StartOutcome startRecord(ServerStore &store, const QString &id, int waitSeconds);
+    /// Implementation of stop(): the public entry point wraps it with the
+    /// `server.beforeStop` / `server.afterStop` plugin hooks.
+    static Result stopRecord(ServerStore &store, ServerRecord record, bool force);
 };
 
 } // namespace mcsm

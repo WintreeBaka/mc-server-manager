@@ -4,6 +4,7 @@ set(MCSM_GUI_SOURCES
     src/app/BackendClient.cpp
     src/app/ThemeManager.cpp
     src/app/Easing.cpp
+    src/plugin/PluginHost.cpp
     src/model/ServerModel.cpp
     src/model/ServerTypes.cpp
     src/ui/MainWindow.cpp
@@ -22,6 +23,9 @@ set(MCSM_GUI_SOURCES
     src/pages/BackupPage.cpp
     src/pages/PluginPage.cpp
     src/pages/SettingsPage.cpp
+    src/pages/PluginExtensionsPage.cpp
+    src/pages/PluginImportDialog.cpp
+    src/pages/PluginPageView.cpp
     src/pages/CreateServerDialog.cpp
 )
 
@@ -30,6 +34,7 @@ set(MCSM_GUI_HEADERS
     src/app/BackendClient.h
     src/app/ThemeManager.h
     src/app/Easing.h
+    src/plugin/PluginHost.h
     src/model/ServerModel.h
     src/model/ServerTypes.h
     src/ui/MainWindow.h
@@ -48,6 +53,9 @@ set(MCSM_GUI_HEADERS
     src/pages/BackupPage.h
     src/pages/PluginPage.h
     src/pages/SettingsPage.h
+    src/pages/PluginExtensionsPage.h
+    src/pages/PluginImportDialog.h
+    src/pages/PluginPageView.h
     src/pages/CreateServerDialog.h
 )
 
@@ -58,7 +66,7 @@ qt_add_executable(McServerManager
 
 target_include_directories(McServerManager PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_link_libraries(McServerManager PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+target_link_libraries(McServerManager PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Qml)
 
 set_target_properties(McServerManager PROPERTIES
     WIN32_EXECUTABLE ON

@@ -12,6 +12,7 @@
 #include <QAbstractItemView>
 
 #include "app/Easing.h"
+#include "plugin/PluginHost.h"
 
 namespace mcsm {
 namespace {
@@ -46,13 +47,23 @@ AppContext::AppContext(QObject *parent)
     m_backend = new BackendClient(this);
     m_servers = new ServerModel(this);
     m_settings = new QSettings(settingsPath(), QSettings::IniFormat, this);
+    m_plugins = new PluginHost(this);
+    m_plugins->setBackend(m_backend);
+    m_plugins->setSettings(m_settings);
 
     m_pollTimer.setInterval(kPollIntervalMs);
     connect(&m_pollTimer, &QTimer::timeout, this, &AppContext::onPoll);
     connect(m_backend, &BackendClient::availabilityChanged, this, [this](bool available) {
         emit backendAvailabilityChanged(available);
+        if (available)
+            m_plugins->reload();
     });
     connect(ThemeManager::instance(), &ThemeManager::themeChanged, this, &AppContext::onThemeChanged);
+
+    // plugin frontend scripts receive the same notifications the pages do
+    connect(m_plugins, &PluginHost::toastRequested, this, [this](const QString &message, const QString &level) {
+        emit notify(message, level.isEmpty() ? QStringLiteral("info") : level);
+    });
 }
 
 void AppContext::bootstrap()
@@ -64,6 +75,7 @@ void AppContext::bootstrap()
     applyTheme();
     m_pollTimer.start();
     refreshServers();
+    m_plugins->reload();
     if (m_settings->value(QStringLiteral("scheduler/enabled"), true).toBool())
         startScheduler();
 }
@@ -207,6 +219,11 @@ void AppContext::onThemeChanged()
 {
     applyTheme();
     saveSettings();
+    if (m_plugins)
+        m_plugins->dispatchEvent(
+            QStringLiteral("theme.changed"),
+            QJsonObject {{QStringLiteral("dark"), ThemeManager::instance()->isDark()},
+                         {QStringLiteral("style"), ThemeManager::instance()->accentStyleName()}});
 }
 
 bool AppContext::animationsEnabled() const
@@ -256,6 +273,11 @@ void AppContext::setSelectedServerId(const QString &id)
     if (m_selectedId == id)
         return;
     m_selectedId = id;
+    if (m_plugins) {
+        m_plugins->setSelectedServerId(id);
+        m_plugins->dispatchEvent(QStringLiteral("server.selected"),
+                                 QJsonObject {{QStringLiteral("serverId"), id}});
+    }
     emit selectionChanged(id);
 }
 
@@ -281,6 +303,10 @@ void AppContext::refreshServers(std::function<void(bool, const QString &)> done)
                                setSelectedServerId(list.isEmpty() ? QString() : list.first().id);
 
                            emit serversRefreshed(true, QString());
+                           if (m_plugins)
+                               m_plugins->dispatchEvent(
+                                   QStringLiteral("servers.refreshed"),
+                                   QJsonObject {{QStringLiteral("count"), list.size()}});
                            if (done)
                                done(true, QString());
                        });
@@ -295,6 +321,8 @@ void AppContext::refreshEnvironment()
             return;
         m_environment = reply.data;
         emit environmentChanged(m_environment);
+        if (m_plugins)
+            m_plugins->dispatchEvent(QStringLiteral("environment.changed"), m_environment);
     });
 }
 

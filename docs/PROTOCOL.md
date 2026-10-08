@@ -90,3 +90,25 @@
   "warnings": ["修改前已自动备份，可随时回滚"]
 }
 ```
+
+## 插件协议（管理器 ↔ 插件）
+
+管理器插件（Plugin SDK）不复用上面的命令协议，而是**每次调用拉起一个独立进程**，
+用「一行 JSON 进、一行 JSON 出」的方式通信（细节见 [PLUGIN-SDK.md](PLUGIN-SDK.md)）：
+
+```jsonc
+// 管理器 -> 插件（stdin，一行）
+{"apiVersion":"1","plugin":"com.example.perf-tuner","method":"server.beforeStart",
+ "params":{"server":{"id":"survival","memory":"16G"}},"caller":"mcsm-cli"}
+
+// 插件 -> 管理器（stdout，一行；可先输出若干 {"type":"log"} 进度行）
+{"ok":true,"data":{"memoryGb":16},
+ "patch":{"jvmArgs":["-XX:+UseZGC"],"note":"已应用 ZGC"},
+ "warnings":[],"log":["applied tuning"]}
+
+// 失败
+{"ok":false,"error":{"code":"METHOD_NOT_FOUND","message":"未实现该钩子","detail":""}}
+```
+
+调用方（`mcsm-cli plugin call` / `plugin hook`）会把结果包在常规信封里返回，
+因此界面与脚本仍然只面对一套 JSON 约定。

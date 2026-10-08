@@ -33,6 +33,7 @@ private:
     Result cmdConfig();
     Result cmdBackup();
     Result cmdPlugin();
+    Result cmdPluginPackage();
     Result cmdSchedule();
     Result cmdSettings();
 

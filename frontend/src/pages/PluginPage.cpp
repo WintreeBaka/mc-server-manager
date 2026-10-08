@@ -19,8 +19,8 @@
 namespace mcsm {
 
 PluginPage::PluginPage(QWidget *parent)
-    : PageBase(QStringLiteral("插件"),
-               QStringLiteral("从 Modrinth / Hangar 搜索并安装插件，也可以启停或删除本地插件"), parent)
+    : PageBase(QStringLiteral("服务器插件"),
+               QStringLiteral("为选中的服务器安装 Bukkit / Paper 插件；管理器自身的扩展在「插件扩展」"), parent)
 {
     m_selector = new ServerSelector(this);
     setHeaderTrailing(m_selector);

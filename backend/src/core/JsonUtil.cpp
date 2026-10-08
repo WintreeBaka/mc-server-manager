@@ -116,8 +116,11 @@ bool writeObjectFile(const QString &path, const QJsonObject &object, QString *er
 
 QJsonObject parseObject(const QByteArray &bytes, bool *ok)
 {
+    // Windows editors and PowerShell's Set-Content write a UTF-8 BOM; strip it so
+    // plugin.json / settings files produced by other tools still parse.
+    const QByteArray payload = bytes.startsWith("\xEF\xBB\xBF") ? bytes.mid(3) : bytes;
     QJsonParseError parseError {};
-    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &parseError);
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
         if (ok)
             *ok = false;

@@ -7,6 +7,7 @@
 #include "core/Logger.h"
 #include "core/StringUtil.h"
 #include "net/VersionResolver.h"
+#include "plugin/PluginRuntime.h"
 #include "server/ServerRecord.h"
 
 namespace mcsm {
@@ -31,6 +32,20 @@ QString resolveDocker()
         }
     }
     return QString();
+}
+
+/// `JAVA_OPTS` handed to the container: the per-server options plus whatever
+/// backend plugins asked for in their `server.beforeStart` hook.
+QString javaOptionsWithPlugins(const ServerRecord &record)
+{
+    const QJsonObject patch = PluginRuntime::readStartPatch(record);
+    if (patch.isEmpty())
+        return record.effectiveJavaOptions();
+    const QStringList extra = Json::toList(patch.value(QStringLiteral("jvmArgs")));
+    if (extra.isEmpty())
+        return record.effectiveJavaOptions();
+    return QStringLiteral("%1 %2").arg(record.effectiveJavaOptions(), extra.join(QLatin1Char(' ')))
+        .simplified();
 }
 
 } // namespace
@@ -183,16 +198,32 @@ ProcessResult DockerManager::runContainer(const ServerRecord &record,
         QStringLiteral("-e"), QStringLiteral("TZ=Asia/Shanghai"),
         QStringLiteral("-e"), QStringLiteral("SERVER_PORT=%1").arg(record.port),
         QStringLiteral("-e"), QStringLiteral("MEMORY=%1").arg(memory),
-        QStringLiteral("-e"), QStringLiteral("JAVA_OPTS=%1").arg(record.effectiveJavaOptions()),
+        QStringLiteral("-e"), QStringLiteral("JAVA_OPTS=%1").arg(javaOptionsWithPlugins(record)),
         QStringLiteral("-e"), QStringLiteral("MCSM_SERVER_ID=%1").arg(record.id),
         QStringLiteral("--label"), QStringLiteral("mcsm.managed=true"),
         QStringLiteral("--label"), QStringLiteral("mcsm.server=%1").arg(record.id),
         QStringLiteral("-v"), QStringLiteral("%1:/data").arg(mount),
         QStringLiteral("-w"), QStringLiteral("/data"),
         QStringLiteral("--memory"), record.containerMemoryLimit(),
-        image,
-        QStringLiteral("/bin/sh"), startScript,
     };
+
+    // backend plugins may extend the container: extra environment variables and
+    // raw `docker run` flags contributed by `server.beforeStart` hooks.
+    const QJsonObject patch = PluginRuntime::readStartPatch(record);
+    if (!patch.isEmpty()) {
+        const QJsonObject env = patch.value(QStringLiteral("env")).toObject();
+        for (auto it = env.constBegin(); it != env.constEnd(); ++it) {
+            args << QStringLiteral("-e")
+                 << QStringLiteral("%1=%2").arg(it.key(), it.value().toVariant().toString());
+        }
+        const QStringList extra = Json::toList(patch.value(QStringLiteral("dockerArgs")));
+        for (const QString &flag : extra) {
+            if (!flag.trimmed().isEmpty())
+                args << flag;
+        }
+    }
+
+    args << image << QStringLiteral("/bin/sh") << startScript;
 
     ProcessResult result = ProcessRunner::run(docker, args, 120000);
     if (!result.ok() && error)

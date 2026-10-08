@@ -14,8 +14,10 @@
 #include "pages/CreateServerDialog.h"
 #include "pages/DashboardPage.h"
 #include "pages/PluginPage.h"
+#include "pages/PluginPageView.h"
 #include "pages/ServersPage.h"
 #include "pages/SettingsPage.h"
+#include "plugin/PluginHost.h"
 #include "ui/FramelessHelper.h"
 #include "ui/Sidebar.h"
 #include "ui/TitleBar.h"
@@ -93,7 +95,11 @@ void MainWindow::buildUi()
     m_sidebar->addItem(QStringLiteral("▶"), QStringLiteral("控制台"), QStringLiteral("实时日志与指令"));
     m_sidebar->addItem(QStringLiteral("✎"), QStringLiteral("配置文件"), QStringLiteral("快捷 / 专家配置"));
     m_sidebar->addItem(QStringLiteral("▥"), QStringLiteral("备份"), QStringLiteral("定时备份与回滚"));
-    m_sidebar->addItem(QStringLiteral("✦"), QStringLiteral("插件"), QStringLiteral("插件市场"));
+    // “服务器插件” = Bukkit/Paper plugins installed into one server; the manager
+    // extensions live in 设置 → 插件扩展, so the two must not share a label
+    m_sidebar->addItem(QStringLiteral("✦"), QStringLiteral("服务器插件"),
+                       QStringLiteral("为选中的服务器安装 / 管理 Bukkit、Paper 插件"));
+    m_baseSidebarItems = m_sidebar->itemCount();
 
     m_stack = new AnimatedStack(content);
     m_dashboard = new DashboardPage(m_stack);
@@ -132,7 +138,9 @@ void MainWindow::buildUi()
     m_toasts = new ToastHost(central);
     m_toasts->raise();
 
-    connect(m_sidebar, &Sidebar::itemSelected, this, &MainWindow::navigateTo);
+    // sidebar items and stack pages line up for the built in pages; plugin
+    // pages are appended after them, so they need an explicit mapping
+    connect(m_sidebar, &Sidebar::itemSelected, this, &MainWindow::selectSidebarItem);
 
     // Ctrl+1 … Ctrl+7 jump between pages (also used by the automated UI test).
     for (int i = 0; i < PageCount; ++i) {
@@ -164,15 +172,27 @@ void MainWindow::buildUi()
         navigateTo(Plugin);
     });
 
+    // ---- plugin contributed pages -------------------------------------------
+    PluginHost *plugins = AppContext::instance()->plugins();
+    connect(plugins, &PluginHost::pagesReset, this, &MainWindow::removePluginPages);
+    connect(plugins, &PluginHost::pageRegistered, this, &MainWindow::addPluginPage);
+    connect(plugins, &PluginHost::pageContentChanged, this, &MainWindow::syncPluginPageContent);
+    connect(plugins, &PluginHost::pageOpenRequested, this, [this](const QString &pageId) {
+        const int index = indexOfPluginPage(pageId);
+        if (index >= 0)
+            navigateTo(index);
+    });
+    for (const PluginPageInfo &page : plugins->pages())
+        addPluginPage(page.id);
+
     m_sidebar->setCurrentIndex(Dashboard);
 }
 
 void MainWindow::navigateTo(int index)
 {
-    if (index < 0 || index >= PageCount)
+    if (index < 0 || index >= m_stack->count())
         return;
-    // the settings page has no sidebar entry: clear the highlight instead
-    m_sidebar->setCurrentIndex(index < m_sidebar->itemCount() ? index : -1);
+    syncSidebarTo(index);
     // the settings page brings its own left menu, so the main one steps aside
     m_sidebar->setVisible(index != Settings);
     m_stack->setCurrentIndex(index, true, index > m_stack->currentIndex() ? 1 : -1);
@@ -181,8 +201,106 @@ void MainWindow::navigateTo(int index)
     updateStatusStrip();
 }
 
+void MainWindow::syncSidebarTo(int pageIndex)
+{
+    // Page order: 6 pages with a sidebar entry, then 设置 (gear button only),
+    // then every plugin contributed page.
+    int sidebarIndex = -1;
+    if (pageIndex >= 0 && pageIndex < m_baseSidebarItems)
+        sidebarIndex = pageIndex;
+    else if (pageIndex >= PageCount)
+        sidebarIndex = m_baseSidebarItems + (pageIndex - PageCount);
+    m_sidebar->setCurrentIndex(sidebarIndex);
+}
+
+void MainWindow::selectSidebarItem(int sidebarIndex)
+{
+    if (sidebarIndex < 0)
+        return;
+    if (sidebarIndex < m_baseSidebarItems) {
+        navigateTo(sidebarIndex);
+        return;
+    }
+    navigateTo(PageCount + (sidebarIndex - m_baseSidebarItems));
+}
+
+int MainWindow::indexOfPluginPage(const QString &pageId) const
+{
+    for (int i = 0; i < m_stack->count(); ++i) {
+        auto *page = qobject_cast<PluginPageView *>(m_stack->page(i));
+        if (page && page->pageId() == pageId)
+            return i;
+    }
+    return -1;
+}
+
+void MainWindow::addPluginPage(const QString &pageId)
+{
+    PluginHost *plugins = AppContext::instance()->plugins();
+    const PluginPageInfo info = plugins->pageInfo(pageId);
+    if (info.id.isEmpty() || m_pluginPages.contains(pageId))
+        return;
+    auto *view = new PluginPageView(info, m_stack);
+    view->setBlocks(plugins->pageContent(pageId));
+    m_stack->addPage(view);
+    m_sidebar->addItem(info.icon.isEmpty() ? QStringLiteral("✦") : info.icon, info.title,
+                       QStringLiteral("%1 · 来自插件 %2").arg(info.title, info.pluginName));
+    m_pluginPages.insert(pageId, view);
+    updateStatusStrip();
+}
+
+void MainWindow::syncPluginPageContent(const QString &pageId)
+{
+    PluginPageView *view = m_pluginPages.value(pageId);
+    if (!view)
+        return;
+    view->setBlocks(AppContext::instance()->plugins()->pageContent(pageId));
+}
+
+void MainWindow::removePluginPages()
+{
+    if (m_pluginPages.isEmpty())
+        return;
+    const int previousPage = m_stack->currentIndex();
+    auto *current = qobject_cast<PluginPageView *>(m_stack->currentWidget());
+    const bool wasOnPluginPage = current && m_pluginPages.contains(current->pageId());
+
+    const QVector<PluginPageView *> views = m_pluginPages.values().toVector();
+    for (PluginPageView *view : views)
+        m_stack->removePage(view);
+    m_pluginPages.clear();
+    m_sidebar->truncate(m_baseSidebarItems);
+
+    if (wasOnPluginPage) {
+        navigateTo(Dashboard);
+    } else {
+        m_stack->setCurrentIndexSilently(qBound(0, previousPage, m_stack->count() - 1));
+        syncSidebarTo(m_stack->currentIndex());
+    }
+    updateStatusStrip();
+}
+
 void MainWindow::showPage(const QString &name)
 {
+    const QString key = name.trimmed().toLower();
+    // settings sections: --page settings-plugins / settings-runtime / settings-experimental …
+    if (key.startsWith(QLatin1String("settings-")) || key == QLatin1String("extensions")) {
+        navigateTo(Settings);
+        m_settings->showSection(key == QLatin1String("extensions")
+                                    ? QStringLiteral("plugins")
+                                    : key.mid(QStringLiteral("settings-").size()));
+        return;
+    }
+    // plugin contributed pages can be deep linked by their page id
+    for (const PluginPageInfo &page : AppContext::instance()->plugins()->pages()) {
+        if (page.id.compare(key, Qt::CaseInsensitive) == 0) {
+            const int index = indexOfPluginPage(page.id);
+            if (index >= 0) {
+                navigateTo(index);
+                return;
+            }
+        }
+    }
     static const QHash<QString, int> pages = {
         {QStringLiteral("dashboard"), Dashboard}, {QStringLiteral("overview"), Dashboard},
         {QStringLiteral("servers"), Servers},     {QStringLiteral("console"), Console},

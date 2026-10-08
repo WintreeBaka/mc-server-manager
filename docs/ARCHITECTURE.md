@@ -15,9 +15,11 @@
 frontend/
   app/      主题(ThemeManager) · 缓动曲线(Easing) · 后端通信(BackendClient) · 全局上下文(AppContext)
   model/    ServerInfo / ServerModel（列表模型与状态枚举）
+  plugin/   插件宿主(PluginHost)：QJSEngine 执行插件前端脚本，桥接 mcsm.* 接口
   ui/       主窗口 · 标题栏 · 导航 · Toast · 无边框窗口助手
   widgets/  渐变按钮 · 卡片 · 开关 · 分段控件 · 动画栈 · 日志视图 · 行内标签
-  pages/    总览 · 服务器 · 控制台 · 配置文件 · 备份 · 插件 · 设置 · 新建向导
+  pages/    总览 · 服务器 · 控制台 · 配置文件 · 备份 · 服务器插件 · 设置 · 新建向导
+            + 插件扩展页 / 插件导入对话框 / 插件页面渲染器
 
 backend/
   cli/      参数解析(ArgParser) 与命令路由(CommandRouter)
@@ -28,9 +30,31 @@ backend/
   server/   记录(ServerRecord/ServerStore) · 安装器(ServerInstaller) · 生命周期(ServerLifecycle) · RCON
   config/   配置字段表(ConfigSchema) · 读写与备份回滚(ConfigManager)
   backup/   存档打包、恢复、保留策略(BackupService)
-  plugin/   Modrinth / Hangar / Spigot 搜索与安装(PluginManager)
+  plugin/   服务器插件市场(PluginManager) · 管理器插件包(PackageManager) · 插件运行时(PluginRuntime)
   schedule/ 定时备份守护进程(Scheduler)
 ```
+
+## 插件系统（Plugin SDK）
+
+管理器插件包由三个模块组成，边界很清晰：
+
+| 模块 | 职责 |
+| --- | --- |
+| `backend/src/core/Archive.cpp` | 用随包内置的 7-Zip 解压插件包（找不到内置副本时回退系统 7z / tar） |
+| `backend/src/plugin/PackageManager.cpp` | 安装 / 卸载 / 启停、`registry.json`、`plugin.json` 校验、**作用域自动识别**、`plugin api` 接口清单 |
+| `backend/src/plugin/PluginRuntime.cpp` | 后端插件的 JSON-Line 进程调用、生命周期钩子分发、启动补丁、Web 面板服务 |
+| `frontend/src/plugin/PluginHost.cpp` | QJSEngine 宿主 + `mcsm.*` API 桥（页面注册、Toast、存储、调用后端、事件订阅） |
+
+两个关键约束：
+
+1. **前端脚本没有原生能力**：只能调用 `mcsm.*` 暴露的接口，拿不到文件系统或进程；脚本异常只影响该插件。
+2. **后端插件是独立进程**：请求一行 JSON、响应一行 JSON，超时即终止；钩子失败只会变成 `warnings`，
+   绝不会中断服务器管理流程。
+
+性能优化类插件的主入口是 `server.beforeStart` 钩子返回的 **patch**：
+`jvmArgs` / `env` / `dockerArgs` 会被合并进 `JAVA_OPTS`、容器环境变量与 `docker run` 参数，
+同时写入生成的启动脚本（本机 JDK 模式），并落盘到 `<服务器目录>/.mcsm/start-patch.json` 便于排查。
+补丁每次启动前重建，停用插件后自动清除。
 
 ## 关键设计
 
@@ -116,4 +140,5 @@ Qt 的样式表无法覆盖所有的地方（下拉列表弹出层、菜单、�
 | `<数据根>/servers.json` | 所有服务器记录（端口、内存、JDK、备份计划…） |
 | `<数据根>/gui.ini` | 界面设置（主题、色彩风格、字体、后端路径、数据目录） |
 | `<数据根>/logs/backend.log` | 后端诊断日志（启动、下载、docker 命令、错误） |
+| `<数据根>/plugins/` | 管理器插件包（`registry.json` + 每个插件一个目录 + `.data/<id>/` 私有数据） |
 | `<数据根>/servers/<id>/` | 单个服务器目录，容器内挂载为 `/data` |
