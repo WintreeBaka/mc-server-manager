@@ -58,7 +58,10 @@ Write-Host "release  : $Tag  ($Repo)" -ForegroundColor Cyan
 Write-Host "notes    : $NotesFile"
 foreach ($asset in $Assets) { Write-Host ("asset    : {0}  ({1:N1} MB)" -f $asset, ((Get-Item $asset).Length / 1MB)) }
 
-$body = Get-Content $NotesFile -Raw -Encoding UTF8
+# [IO.File]::ReadAllText instead of Get-Content -Raw: the latter returns a
+# PSObject carrying PSPath/PSDrive note properties, which ConvertTo-Json would
+# serialise as an object instead of a plain string (the API then rejects it).
+$body = [System.IO.File]::ReadAllText((Resolve-Path $NotesFile), [System.Text.Encoding]::UTF8)
 
 # reuse an existing release for the tag instead of failing on 422
 $release = $null
