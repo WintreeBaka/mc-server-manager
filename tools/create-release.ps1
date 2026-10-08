@@ -30,7 +30,7 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 if (-not $Tag) { $Tag = "v$Version" }
-if (-not $Title) { $Title = "McServerManager $Version" }
+if (-not $Title) { $Title = "McServerManager $Version · Windows 便携版" }
 if (-not $NotesFile) { $NotesFile = "docs\RELEASE_NOTES-$Version.md" }
 if ($Assets.Count -eq 0) {
     $Assets = @("dist\McServerManager-$Version-win64.zip", "docs\PLUGIN-SDK.md")
