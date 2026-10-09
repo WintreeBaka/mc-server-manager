@@ -26,7 +26,9 @@ public:
 
     static bool isDue(const ServerRecord &record, const QDateTime &now, QDateTime *nextDue = nullptr);
     static TickReport tick(bool verbose = false);
-    static int runDaemon(int intervalSeconds, bool once, bool verbose);
+    /// `parentPid` > 0 makes the daemon exit as soon as that process is gone, so
+    /// a killed GUI never leaves an orphan backend polling in the background.
+    static int runDaemon(int intervalSeconds, bool once, bool verbose, qint64 parentPid = 0);
 };
 
 } // namespace mcsm

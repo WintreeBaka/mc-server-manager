@@ -254,6 +254,10 @@ public:
     explicit PageBase(const QString &title, const QString &subtitle, QWidget *parent = nullptr);
 
     virtual void onActivated() {}
+    /// Called right before the user navigates away from this page: pages that
+    /// hold a log stream / timer must release it here so a background page never
+    /// keeps a process (or the CPU) busy.
+    virtual void onDeactivated() {}
     virtual void onServerSelectionChanged(const QString &serverId) { Q_UNUSED(serverId) }
 
     QString title() const { return m_title; }

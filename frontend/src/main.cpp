@@ -12,7 +12,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("McServerManager"));
     QApplication::setOrganizationName(QStringLiteral("McServerManager"));
-    QApplication::setApplicationVersion(QStringLiteral("1.1.0"));
+    QApplication::setApplicationVersion(QStringLiteral("1.1.1"));
 
     // Draw every control ourselves: the native Windows style ignores parts of
     // the style sheet (combo box popups follow the *system* light/dark theme,

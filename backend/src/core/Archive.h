@@ -24,6 +24,18 @@ public:
     /// True when the file starts with the zip magic bytes ("PK").
     static bool isZipArchive(const QString &path);
 
+    /// Paths stored inside the archive (7-Zip listing). Empty on failure.
+    static QStringList listEntries(const QString &archivePath, QString *error = nullptr);
+
+    /// A relative path that cannot escape the extraction root: no drive letter,
+    /// no leading separator, no `..` component. Used for archive entries *and*
+    /// for plugin.json entries (frontend/backend/web entry points).
+    static bool isSafeRelativePath(const QString &path);
+
+    /// True when `path` resolves to `root` or something inside it. Symlinks are
+    /// resolved, so a link pointing outside is rejected.
+    static bool isInside(const QString &root, const QString &path);
+
     static bool extractZip(const QString &archivePath,
                            const QString &destination,
                            QString *error,

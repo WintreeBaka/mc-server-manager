@@ -264,12 +264,36 @@ python tools/static_check.py && powershell -File tools/smoke-test.ps1
 
 代码风格：4 空格缩进、`mcsm` 命名空间、头文件对应同名源文件；界面文本使用中文，注释使用中英混合（保持现有风格即可）。
 
+## 使用 AI 辅助制作
+
+本项目的源码、界面文案与文档在开发过程中**大量使用了 AI 辅助**（代码生成、重构建议、
+问题排查与文档撰写），由维护者审核、测试并整合后提交。所有检查脚本都在仓库内公开，
+可以自行复现：
+
+```bash
+python tools/static_check.py                  # 源码一致性检查
+powershell -File tools/smoke-test.ps1         # 后端冒烟测试（67 项，含插件安全用例）
+powershell -File tools/gui-smoke.ps1          # 界面冒烟测试（拖拽 / 快速切页 / 截图）
+powershell -File tools/ui-perf.ps1            # 界面 CPU 测量（空闲 / 快速切页）
+```
+
+项目按"现状"提供，请在使用前自行评估风险（服务器数据、封禁与后续损失由使用者自行承担）。
+
 ## 许可
 
-[MIT](LICENSE) © 2026 McServerManager contributors
+本项目源码采用 **[MIT](LICENSE)** © 2026 McServerManager contributors。
+
+| 组件 | 许可 | 说明 |
+| --- | --- | --- |
+| 本项目源码 | MIT | 自由使用 / 修改 / 分发，保留版权声明即可 |
+| Qt 6（Core / Gui / Widgets / Network / Qml） | **Qt 个人版 / 开源条款**（GPLv3 或 LGPLv3） | 按 Qt 个人版（开源）条款使用：**动态链接**、未修改 Qt 源码；发行包内含 Qt 运行库，可自行替换为兼容版本 |
+| 7-Zip（内置 `7zip/7za.exe`） | **LGPL + unRAR 限制** | 仅用于解压插件包；随包附 `third_party/7zip/LICENSE-7zip.txt`，未修改其源码 |
 
 本项目与 Mojang / Microsoft 无关；Minecraft 是 Mojang AB 的商标。
 使用本项目创建服务器即表示你同意 [Minecraft EULA](https://aka.ms/MinecraftEULA)。
+
+第三方组件（Qt、7-Zip、Docker 镜像、Minecraft 服务端与插件）的完整声明见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ---
 

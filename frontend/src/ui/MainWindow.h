@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QHash>
+#include <QPixmap>
 
 class QLabel;
 
@@ -33,6 +34,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void buildUi();
@@ -46,6 +48,9 @@ private:
     int indexOfPluginPage(const QString &pageId) const;
     void selectSidebarItem(int sidebarIndex);
     void syncSidebarTo(int pageIndex);
+    /// Repaints the cached window background (gradient + glow circles).
+    void renderBackground();
+    void invalidateBackground() { m_background = QPixmap(); }
 
     TitleBar *m_titleBar = nullptr;
     Sidebar *m_sidebar = nullptr;
@@ -63,6 +68,9 @@ private:
     SettingsPage *m_settings = nullptr;
     QHash<QString, PluginPageView *> m_pluginPages;
     int m_baseSidebarItems = 0;
+    /// The window background is a gradient + two large antialiased circles; it is
+    /// rasterised once per size/theme instead of on every repaint.
+    QPixmap m_background;
 };
 
 } // namespace mcsm

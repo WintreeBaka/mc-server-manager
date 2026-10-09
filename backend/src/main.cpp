@@ -101,7 +101,7 @@ int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("mcsm-cli"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("1.1.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral("1.1.1"));
     QCoreApplication::setOrganizationName(QStringLiteral("McServerManager"));
 
     // Global flags are parsed manually so that command specific flags can be
@@ -128,7 +128,8 @@ int main(int argc, char *argv[])
     if (args.positional(0) == QLatin1String("daemon")) {
         return Scheduler::runDaemon(args.intValue(QStringLiteral("interval"), 60),
                                     args.boolValue(QStringLiteral("once"), false),
-                                    args.boolValue(QStringLiteral("verbose"), false));
+                                    args.boolValue(QStringLiteral("verbose"), false),
+                                    args.bigint(QStringLiteral("parent-pid"), 0));
     }
     if (args.positional(0) == QLatin1String("server") && args.positional(1) == QLatin1String("logs")
         && args.boolValue(QStringLiteral("follow"), false)) {

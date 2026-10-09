@@ -62,6 +62,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(context, &AppContext::themeChanged, this, [this]() {
         m_titleBar->setThemeIsDark(ThemeManager::instance()->isDark());
+        invalidateBackground();
         update();
     });
 
@@ -190,8 +191,11 @@ void MainWindow::buildUi()
 
 void MainWindow::navigateTo(int index)
 {
-    if (index < 0 || index >= m_stack->count())
+    if (index < 0 || index >= m_stack->count() || index == m_stack->currentIndex())
         return;
+    // let the page we are leaving release its resources (log streams, timers)
+    if (auto *leaving = qobject_cast<PageBase *>(m_stack->currentWidget()))
+        leaving->onDeactivated();
     syncSidebarTo(index);
     // the settings page brings its own left menu, so the main one steps aside
     m_sidebar->setVisible(index != Settings);
@@ -356,15 +360,33 @@ void MainWindow::refreshEnvironment()
 void MainWindow::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event);
-    const Palette &palette = ThemeManager::instance()->palette();
+    if (m_background.isNull() || m_background.size() != size() * devicePixelRatioF()) {
+        renderBackground();
+    }
     QPainter painter(this);
+    if (!m_background.isNull())
+        painter.drawPixmap(0, 0, m_background);
+}
+
+void MainWindow::renderBackground()
+{
+    const Palette &palette = ThemeManager::instance()->palette();
+    const qreal ratio = devicePixelRatioF();
+    QPixmap pixmap(qMax(1, int(width() * ratio)), qMax(1, int(height() * ratio)));
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.fillRect(rect(), ThemeManager::windowGradient(palette, QRectF(0, 0, width(), height())));
 
     // Decorative glows only in the light gradient theme: dark mode stays neutral
     // and the flat style stays plain.
     if (ThemeManager::instance()->accentStyle() == ThemeManager::AccentStyle::Flat || palette.dark)
+    {
+        painter.end();
+        m_background = pixmap;
         return;
+    }
 
     QColor softPink = palette.pink;
     softPink.setAlphaF(palette.dark ? 0.10 : 0.16);
@@ -376,6 +398,14 @@ void MainWindow::paintEvent(QPaintEvent *event)
     softBlue.setAlphaF(palette.dark ? 0.09 : 0.14);
     painter.setBrush(softBlue);
     painter.drawEllipse(QPointF(width() * 0.92, height() * 0.94), width() * 0.30, height() * 0.26);
+    painter.end();
+    m_background = pixmap;
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    invalidateBackground();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

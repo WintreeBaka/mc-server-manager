@@ -2,11 +2,13 @@
 
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QTimer>
 
 #include "backup/BackupService.h"
 #include "core/JsonUtil.h"
 #include "core/Logger.h"
+#include "core/ProcessRunner.h"
 #include "server/ServerStore.h"
 
 namespace mcsm {
@@ -75,7 +77,28 @@ Scheduler::TickReport Scheduler::tick(bool verbose)
     return report;
 }
 
-int Scheduler::runDaemon(int intervalSeconds, bool once, bool verbose)
+namespace {
+
+/// Liveness probe for the process that started the daemon.
+bool processAlive(qint64 pid)
+{
+    if (pid <= 0)
+        return true;
+#ifdef Q_OS_WIN
+    const ProcessResult result =
+        ProcessRunner::run(QStringLiteral("tasklist"),
+                           {QStringLiteral("/FI"), QStringLiteral("PID eq %1").arg(pid),
+                            QStringLiteral("/NH")},
+                           20000);
+    return result.stdOut.contains(QString::number(pid));
+#else
+    return QFileInfo::exists(QStringLiteral("/proc/%1").arg(pid));
+#endif
+}
+
+} // namespace
+
+int Scheduler::runDaemon(int intervalSeconds, bool once, bool verbose, qint64 parentPid)
 {
     const int interval = qBound(15, intervalSeconds, 3600);
 
@@ -99,6 +122,22 @@ int Scheduler::runDaemon(int intervalSeconds, bool once, bool verbose)
     timer->setInterval(interval * 1000);
     QObject::connect(timer, &QTimer::timeout, emitReport);
     timer->start();
+
+    if (parentPid > 0) {
+        // checked more often than a tick so an orphan is noticed quickly
+        auto *guard = new QTimer();
+        guard->setInterval(5000);
+        QObject::connect(guard, &QTimer::timeout, [parentPid, guard]() {
+            if (processAlive(parentPid))
+                return;
+            Logger::info(QStringLiteral("daemon"),
+                         QStringLiteral("parent process %1 is gone - exiting").arg(parentPid));
+            guard->stop();
+            QCoreApplication::quit();
+        });
+        guard->start();
+    }
+
     emitReport();
     const int code = QCoreApplication::exec();
     delete timer;

@@ -7,7 +7,7 @@
     Usage:
         .\tools\package-release.ps1
         .\tools\package-release.ps1 -Flavor with-plugins      # 追加示例插件包，名字带后缀
-        .\tools\package-release.ps1 -Version 1.1.0 -DistDir dist
+        .\tools\package-release.ps1 -Version 1.1.1 -DistDir dist
 
     Two flavours exist and they deliberately get **different** folder names so the
     "plain" build never overwrites the one that ships the example plugin packages:
@@ -18,7 +18,7 @@
 param(
     [string]$BinDir = "build\bin",
     [string]$DistDir = "dist",
-    [string]$Version = "1.1.0",
+    [string]$Version = "1.1.1",
     [ValidateSet("plain", "with-plugins")]
     [string]$Flavor = "plain"
 )
@@ -44,7 +44,7 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 Write-Host "copying runtime..." -ForegroundColor Cyan
 Copy-Item (Join-Path $BinDir "*") -Destination $stage -Recurse -Force
 
-foreach ($extra in @("README.md", "packaging\QUICKSTART.txt")) {
+foreach ($extra in @("README.md", "packaging\QUICKSTART.txt", "THIRD_PARTY_NOTICES.md", "LICENSE")) {
     if (Test-Path $extra) {
         Copy-Item $extra -Destination $stage -Force
     }

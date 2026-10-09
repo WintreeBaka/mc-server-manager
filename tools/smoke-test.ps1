@@ -1,4 +1,4 @@
-<#
+﻿<#
     Smoke test for the McServerManager backend (mcsm-cli).
 
     It exercises every code path that does not need a running Docker daemon:
@@ -19,6 +19,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# mcsm-cli prints UTF-8 JSON. Without this, PowerShell decodes native output with
+# the console code page (GBK) and every Chinese message turns into mojibake.
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
 $script:passed = 0
 $script:failed = 0
 $script:notes = @()
@@ -38,7 +43,15 @@ function Write-Result {
 # Runs the CLI and returns the parsed JSON envelope (never throws).
 function Invoke-Cli {
     param([string[]]$Arguments, [switch]$AllowFailure)
-    $raw = & $Exe --home $DataRoot @Arguments 2>&1
+    # the CLI mirrors warnings to stderr; with ErrorActionPreference=Stop that
+    # native stderr output would abort the whole script, so relax it here
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = & $Exe --home $DataRoot @Arguments 2>&1
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     $code = $LASTEXITCODE
     $text = ($raw | Out-String).Trim()
     $json = $null
@@ -425,6 +438,114 @@ if (-not $zipTool) {
     Write-Result "non zip package rejected" `
         ((-not $badPackage.ok) -and $badPackage.error.code -eq "INVALID_PLUGIN_PACKAGE") `
         ("code=" + $badPackage.error.code)
+
+    # ---------------------------------------------------- apiVersion 区间 -----
+    Write-Host ""
+    Write-Host "plugin api version + security" -ForegroundColor Cyan
+
+    Add-Type -AssemblyName System.IO.Compression | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
+
+    # 用 .NET 直接写 entry 名，才能造出 zip-slip / 绝对路径这种恶意包
+    function New-RawZip {
+        param([string]$Path, [hashtable]$Entries)
+        if (Test-Path $Path) { Remove-Item -LiteralPath $Path -Force }
+        $archive = [System.IO.Compression.ZipFile]::Open($Path, 'Create')
+        try {
+            foreach ($name in $Entries.Keys) {
+                $entry = $archive.CreateEntry($name)
+                $writer = New-Object System.IO.StreamWriter($entry.Open())
+                $writer.Write($Entries[$name])
+                $writer.Dispose()
+            }
+        } finally { $archive.Dispose() }
+    }
+
+    $manifestJson = '{"id":"smoke.raw","name":"raw","version":"1.0.0","apiVersion":1}'
+
+    # apiVersion 越界 -> 拒绝
+    $futureZip = Join-Path $Assets "smoke-future.zip"
+    New-RawZip -Path $futureZip -Entries @{
+        "plugin.json" = '{"id":"smoke.future","name":"future","version":"1.0.0","apiVersion":99}'
+        "frontend/index.js" = 'mcsm.log("future");'
+    }
+    $future = Invoke-Cli @("plugin", "package", "inspect", "--zip", $futureZip) -AllowFailure
+    Write-Result "apiVersion 超出区间被拒绝" `
+        ((-not $future.ok) -and ($future.error.detail -match "apiVersion")) `
+        ("code=" + $future.error.code + " detail=" + $future.error.detail)
+
+    $oldZip = Join-Path $Assets "smoke-old.zip"
+    New-RawZip -Path $oldZip -Entries @{
+        "plugin.json" = '{"id":"smoke.old","name":"old","version":"1.0.0","apiVersion":0}'
+        "frontend/index.js" = 'mcsm.log("old");'
+    }
+    $old = Invoke-Cli @("plugin", "package", "inspect", "--zip", $oldZip) -AllowFailure
+    Write-Result "apiVersion 低于下限被拒绝" ((-not $old.ok) -and ($old.error.detail -match "apiVersion")) `
+        ("detail=" + $old.error.detail)
+
+    # 字符串形式仍然接受，但会提示改成整数
+    $stringZip = Join-Path $Assets "smoke-stringapi.zip"
+    New-RawZip -Path $stringZip -Entries @{
+        "plugin.json" = '{"id":"smoke.stringapi","name":"stringapi","version":"1.0.0","apiVersion":"1"}'
+        "frontend/index.js" = 'mcsm.log("string");'
+    }
+    $stringApi = Invoke-Cli @("plugin", "package", "inspect", "--zip", $stringZip)
+    Write-Result "apiVersion 字符串形式兼容并给出提示" `
+        ($stringApi.ok -and $stringApi.data.apiVersion -eq 1 -and $stringApi.warnings.Count -gt 0) `
+        ("apiVersion=" + $stringApi.data.apiVersion + " warnings=" + $stringApi.warnings.Count)
+
+    # minManagerVersion 只提示，不拦截
+    $minVersionZip = Join-Path $Assets "smoke-minversion.zip"
+    New-RawZip -Path $minVersionZip -Entries @{
+        "plugin.json" = '{"id":"smoke.minversion","name":"minversion","version":"1.0.0","apiVersion":1,"minManagerVersion":"99.0.0"}'
+        "frontend/index.js" = 'mcsm.log("min");'
+    }
+    $minVersion = Invoke-Cli @("plugin", "package", "inspect", "--zip", $minVersionZip)
+    Write-Result "minManagerVersion 仅提示不拦截" `
+        ($minVersion.ok -and $minVersion.warnings.Count -gt 0) `
+        ("warnings=" + ($minVersion.warnings -join " / "))
+
+    # zip-slip：../ 与绝对路径都必须被拒绝，且不能在目录外留下文件
+    $slipZip = Join-Path $Assets "smoke-slip.zip"
+    New-RawZip -Path $slipZip -Entries @{
+        "plugin.json" = $manifestJson
+        "../smoke-escaped.txt" = "escaped"
+        "frontend/index.js" = 'mcsm.log("slip");'
+    }
+    $slip = Invoke-Cli @("plugin", "package", "install", "--zip", $slipZip) -AllowFailure
+    Write-Result "zip-slip 路径被拒绝" (-not $slip.ok) ("code=" + $slip.error.code)
+    Write-Result "目录外没有生成文件" (-not (Test-Path (Join-Path $DataRoot "smoke-escaped.txt"))) `
+        "escaped file was written!"
+
+    $absZip = Join-Path $Assets "smoke-absolute.zip"
+    New-RawZip -Path $absZip -Entries @{
+        "plugin.json" = $manifestJson
+        "C:/Windows/Temp/mcsm-smoke-evil.txt" = "evil"
+        "frontend/index.js" = 'mcsm.log("abs");'
+    }
+    $absolute = Invoke-Cli @("plugin", "package", "install", "--zip", $absZip) -AllowFailure
+    Write-Result "绝对路径条目被拒绝" (-not $absolute.ok) ("code=" + $absolute.error.code)
+
+    # 入口指向包外 -> 拒绝
+    $escapeZip = Join-Path $Assets "smoke-entryescape.zip"
+    New-RawZip -Path $escapeZip -Entries @{
+        "plugin.json" = '{"id":"smoke.escape","name":"escape","version":"1.0.0","apiVersion":1,"backend":{"entry":"../../evil.exe"}}'
+    }
+    $escape = Invoke-Cli @("plugin", "package", "inspect", "--zip", $escapeZip) -AllowFailure
+    Write-Result "入口越界被拒绝" `
+        ((-not $escape.ok) -and $escape.error.code -eq "INVALID_PLUGIN_PACKAGE" -and $escape.error.detail) `
+        ("detail=" + $escape.error.detail)
+
+    $apiInfo = Invoke-Cli @("plugin", "api")
+    Write-Result "plugin api 暴露区间与安全策略" `
+        ($apiInfo.ok -and $apiInfo.data.apiVersion -eq 1 -and $apiInfo.data.supportedMinApi -eq 1 `
+            -and $apiInfo.data.supportedMaxApi -ge 1 -and $apiInfo.data.apiVersionPolicy.type -eq "integer" `
+            -and $apiInfo.data.security.installRootPolicy) `
+        "missing apiVersionPolicy/security in plugin api output"
+
+    Write-Result "插件目录外的安装被拒绝" `
+        ((Invoke-Cli @("plugin", "package", "install", "--zip", $frontZip, "--expect", "../evil") -AllowFailure).ok -eq $false) `
+        "expected an id mismatch / unsafe path rejection"
 }
 
 # ----------------------------------------------------------------- cleanup ----

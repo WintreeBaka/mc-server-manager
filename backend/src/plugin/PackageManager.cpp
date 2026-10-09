@@ -1,6 +1,7 @@
 #include "plugin/PackageManager.h"
 
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -18,7 +19,11 @@
 namespace mcsm {
 namespace {
 
-const char *kPluginApiVersion = "1";
+/// Plugin API level. Bump kPluginApiVersion whenever a new batch of interfaces
+/// is added; raise kPluginApiMinVersion only for breaking changes - that is how
+/// old plugins are retired instead of failing in surprising ways.
+constexpr int kPluginApiVersion = 1;
+constexpr int kPluginApiMinVersion = 1;
 
 QString nowIso()
 {
@@ -28,6 +33,21 @@ QString nowIso()
 QStringList readStringList(const QJsonObject &object, const QString &key)
 {
     return Json::toList(object.value(key));
+}
+
+/// True when version `a` is older than `b` (dotted numbers: "1.2.10" > "1.2.9").
+bool versionLessThan(const QString &a, const QString &b)
+{
+    const QStringList left = a.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    const QStringList right = b.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    const int count = qMax(left.size(), right.size());
+    for (int i = 0; i < count; ++i) {
+        const int l = i < left.size() ? left.at(i).toInt() : 0;
+        const int r = i < right.size() ? right.at(i).toInt() : 0;
+        if (l != r)
+            return l < r;
+    }
+    return false;
 }
 
 /// True when the directory contains anything at all (used to detect empty
@@ -55,6 +75,11 @@ QString PluginManifest::backendEntry() const
 QString PluginManifest::webEntry() const
 {
     return Json::str(web, QStringLiteral("entry"));
+}
+
+QString PluginManifest::webServiceEntry() const
+{
+    return Json::str(web, QStringLiteral("service"));
 }
 
 int PluginManifest::webPort() const
@@ -103,6 +128,12 @@ QJsonObject PluginManifest::toJson() const
     object.insert(QStringLiteral("name"), name);
     object.insert(QStringLiteral("version"), version);
     object.insert(QStringLiteral("apiVersion"), apiVersion);
+    object.insert(QStringLiteral("apiSupported"), apiSupported);
+    object.insert(QStringLiteral("supportedApiRange"),
+                  QStringLiteral("%1-%2")
+                      .arg(PackageManager::supportedMinApi())
+                      .arg(PackageManager::supportedMaxApi()));
+    object.insert(QStringLiteral("minManagerVersion"), minManagerVersion);
     object.insert(QStringLiteral("description"), description);
     object.insert(QStringLiteral("author"), author);
     object.insert(QStringLiteral("homepage"), homepage);
@@ -135,9 +166,30 @@ QJsonObject PluginManifest::toJson() const
 
 // ------------------------------------------------------------- helpers -------
 
-QString PackageManager::apiVersion()
+int PackageManager::apiVersion()
 {
-    return QString::fromLatin1(kPluginApiVersion);
+    return kPluginApiVersion;
+}
+
+int PackageManager::supportedMinApi()
+{
+    return kPluginApiMinVersion;
+}
+
+int PackageManager::supportedMaxApi()
+{
+    return kPluginApiVersion;
+}
+
+QString PackageManager::managerVersion()
+{
+    const QString version = QCoreApplication::applicationVersion();
+    return version.isEmpty() ? QStringLiteral("1.1.1") : version;
+}
+
+bool PackageManager::isSafePluginPath(const QString &relative)
+{
+    return Archive::isSafeRelativePath(relative);
 }
 
 QString PackageManager::normalizeId(const QString &raw)
@@ -238,7 +290,7 @@ PluginValidation PackageManager::inspectDirectory(const QString &directory, QStr
         return finish(QStringLiteral("plugin.json 缺少合法的 id 字段"));
     manifest.name = Json::str(raw, QStringLiteral("name"), manifest.id);
     manifest.version = Json::str(raw, QStringLiteral("version"), QStringLiteral("1.0.0"));
-    manifest.apiVersion = Json::str(raw, QStringLiteral("apiVersion"), apiVersion());
+    manifest.minManagerVersion = Json::str(raw, QStringLiteral("minManagerVersion"));
     manifest.description = Json::str(raw, QStringLiteral("description"));
     manifest.author = Json::str(raw, QStringLiteral("author"));
     manifest.homepage = Json::str(raw, QStringLiteral("homepage"));
@@ -250,10 +302,39 @@ PluginValidation PackageManager::inspectDirectory(const QString &directory, QStr
     manifest.web = raw.value(QStringLiteral("web")).toObject();
     manifest.contributes = raw.value(QStringLiteral("contributes")).toObject();
 
-    const QString major = manifest.apiVersion.section(QLatin1Char('.'), 0, 0).trimmed();
-    if (major != apiVersion())
-        return finish(QStringLiteral("插件要求 apiVersion %1，当前管理器只支持 %2")
-                          .arg(manifest.apiVersion, apiVersion()));
+    // ---- apiVersion: a plain integer inside [SUPPORTED_MIN_API, SUPPORTED_MAX_API]
+    const QJsonValue apiValue = raw.value(QStringLiteral("apiVersion"));
+    if (apiValue.isUndefined() || apiValue.isNull()) {
+        manifest.apiVersion = supportedMaxApi();
+    } else if (apiValue.isDouble()) {
+        manifest.apiVersion = apiValue.toInt();
+    } else if (apiValue.isString()) {
+        bool ok = false;
+        manifest.apiVersion = apiValue.toString().trimmed().toInt(&ok);
+        if (!ok)
+            return finish(QStringLiteral("apiVersion 必须是整数（当前写法：\"%1\"）")
+                              .arg(apiValue.toString()));
+        validation.warnings << QStringLiteral("apiVersion 请写成整数 %1（不带引号）")
+                                   .arg(manifest.apiVersion);
+    } else {
+        return finish(QStringLiteral("apiVersion 必须是整数"));
+    }
+    if (manifest.apiVersion < supportedMinApi() || manifest.apiVersion > supportedMaxApi()) {
+        manifest.apiSupported = false;
+        return finish(QStringLiteral("插件 apiVersion %1 不受支持：本管理器支持 %2 - %3")
+                          .arg(manifest.apiVersion)
+                          .arg(supportedMinApi())
+                          .arg(supportedMaxApi()));
+    }
+
+    // minManagerVersion is informational only: it tells the user which manager a
+    // plugin was written for, but it never blocks loading.
+    if (!manifest.minManagerVersion.isEmpty()) {
+        const QString current = managerVersion();
+        if (versionLessThan(current, manifest.minManagerVersion))
+            validation.warnings << QStringLiteral("插件声明需要管理器 %1 或更高（当前 %2），如遇异常请先升级管理器")
+                                       .arg(manifest.minManagerVersion, current);
+    }
 
     const QDir dir(root);
     const bool frontendDir = dir.exists(QStringLiteral("frontend"));
@@ -274,6 +355,9 @@ PluginValidation PackageManager::inspectDirectory(const QString &directory, QStr
     if (frontendEntry.isEmpty() && frontendDir)
         validation.warnings << QStringLiteral("frontend/ 目录存在但没有入口脚本（frontend/index.js）");
     if (!frontendEntry.isEmpty()) {
+        if (!isSafePluginPath(frontendEntry))
+            return finish(QStringLiteral("前端入口路径不合法（不能使用绝对路径或 ..）：%1")
+                              .arg(frontendEntry));
         if (!QFileInfo::exists(dir.filePath(frontendEntry)))
             return finish(QStringLiteral("前端入口文件不存在：%1").arg(frontendEntry));
         manifest.frontend.insert(QStringLiteral("entry"), frontendEntry);
@@ -296,6 +380,9 @@ PluginValidation PackageManager::inspectDirectory(const QString &directory, QStr
     if (backendEntry.isEmpty() && backendDir)
         validation.warnings << QStringLiteral("backend/ 目录存在但没有入口脚本（backend/index.js）");
     if (!backendEntry.isEmpty()) {
+        if (!isSafePluginPath(backendEntry))
+            return finish(QStringLiteral("后端入口路径不合法（不能使用绝对路径或 ..）：%1")
+                              .arg(backendEntry));
         if (!QFileInfo::exists(dir.filePath(backendEntry)))
             return finish(QStringLiteral("后端入口文件不存在：%1").arg(backendEntry));
         manifest.backend.insert(QStringLiteral("entry"), backendEntry);
@@ -305,10 +392,17 @@ PluginValidation PackageManager::inspectDirectory(const QString &directory, QStr
     if (webEntry.isEmpty() && webDir && QFileInfo::exists(dir.filePath(QStringLiteral("web/index.html"))))
         webEntry = QStringLiteral("web/index.html");
     if (!webEntry.isEmpty()) {
+        if (!isSafePluginPath(webEntry))
+            return finish(QStringLiteral("Web 入口路径不合法（不能使用绝对路径或 ..）：%1").arg(webEntry));
         if (!QFileInfo::exists(dir.filePath(webEntry)))
             return finish(QStringLiteral("Web 入口文件不存在：%1").arg(webEntry));
         manifest.web.insert(QStringLiteral("entry"), webEntry);
     }
+
+    const QString webService = Json::str(manifest.web, QStringLiteral("service"));
+    if (!webService.isEmpty() && !isSafePluginPath(webService))
+        return finish(QStringLiteral("web.service 路径不合法（不能使用绝对路径或 ..）：%1")
+                          .arg(webService));
 
     const int port = manifest.webPort();
     if (port != 0 && (port < 1024 || port > 65535)) {
@@ -566,6 +660,16 @@ Result PackageManager::install(const PluginInstallRequest &request)
     }
 
     const QString target = AppPaths::pluginDir(manifest.id);
+    // Security: plugins may only ever be installed inside the manager's own
+    // plugin directory - never anywhere else on the machine.
+    if (!QDir().mkpath(AppPaths::pluginsDir())
+        || !Archive::isInside(AppPaths::pluginsDir(), target)) {
+        cleanup();
+        return Result::fail(QStringLiteral("UNSAFE_PLUGIN_PATH"),
+                            QStringLiteral("插件安装路径越界，已拒绝安装"),
+                            QStringLiteral("%1 不在管理器插件目录 %2 内")
+                                .arg(target, AppPaths::pluginsDir()));
+    }
     const bool replacing = QFileInfo::exists(target);
     if (replacing && !request.force) {
         cleanup();
@@ -749,6 +853,16 @@ QJsonObject PackageManager::apiManifest()
         QStringLiteral("README.md"),
     }));
     packageSection.insert(QStringLiteral("manifestVersion"), apiVersion());
+    packageSection.insert(QStringLiteral("apiVersionType"), QStringLiteral("整数，每增加一批新接口 +1"));
+    packageSection.insert(QStringLiteral("supportedApiRange"),
+                          QStringLiteral("%1-%2").arg(supportedMinApi()).arg(supportedMaxApi()));
+    packageSection.insert(QStringLiteral("example"), QJsonObject {
+        {QStringLiteral("name"), QStringLiteral("my-plugin")},
+        {QStringLiteral("version"), QStringLiteral("1.0.0")},
+        {QStringLiteral("apiVersion"), supportedMaxApi()},
+        {QStringLiteral("minManagerVersion"), managerVersion()},
+        {QStringLiteral("entry"), QStringLiteral("plugin.json 中的 frontend/backend 入口")},
+    });
     packageSection.insert(QStringLiteral("requiredFields"), strArray({
         QStringLiteral("id"), QStringLiteral("name"), QStringLiteral("version"),
     }));
@@ -817,6 +931,26 @@ QJsonObject PackageManager::apiManifest()
 
     QJsonObject object;
     object.insert(QStringLiteral("apiVersion"), apiVersion());
+    object.insert(QStringLiteral("supportedMinApi"), supportedMinApi());
+    object.insert(QStringLiteral("supportedMaxApi"), supportedMaxApi());
+    object.insert(QStringLiteral("managerVersion"), managerVersion());
+    object.insert(QStringLiteral("apiVersionPolicy"), QJsonObject {
+        {QStringLiteral("type"), QStringLiteral("integer")},
+        {QStringLiteral("bumpOn"), QStringLiteral("每增加一批新接口 +1")},
+        {QStringLiteral("rejectWhen"), QStringLiteral("不在 supportedMinApi..supportedMaxApi 区间内")},
+        {QStringLiteral("minManagerVersion"), QStringLiteral("仅提示用户，不参与硬校验")},
+    });
+    object.insert(QStringLiteral("security"), QJsonObject {
+        {QStringLiteral("installRoot"), AppPaths::pluginsDir()},
+        {QStringLiteral("installRootPolicy"), QStringLiteral("插件只能安装在管理器数据目录的 plugins/ 下")},
+        {QStringLiteral("archiveRules"), QJsonArray::fromStringList({
+            QStringLiteral("禁止绝对路径 / 盘符 / UNC"),
+            QStringLiteral("禁止 .. 跳出解压目录"),
+            QStringLiteral("禁止符号链接"),
+            QStringLiteral("解压后逐个校验落盘路径仍在插件目录内"),
+        })},
+        {QStringLiteral("entryRules"), QStringLiteral("frontend/backend/web 入口必须是包内相对路径")},
+    });
     object.insert(QStringLiteral("manager"), QStringLiteral("McServerManager plugin package API"));
     object.insert(QStringLiteral("package"), packageSection);
     object.insert(QStringLiteral("scopes"), scopes);

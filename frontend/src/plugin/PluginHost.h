@@ -9,6 +9,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
+
 class QJSEngine;
 class QSettings;
 
@@ -91,6 +93,10 @@ public:
 
     void setBackend(BackendClient *backend) { m_backend = backend; }
     void setSettings(QSettings *settings) { m_settings = settings; }
+    /// Cached server list for `mcsm.servers.list()`. Plugin scripts must never
+    /// spawn a backend process synchronously, otherwise one plugin call freezes
+    /// the whole UI.
+    void setServerListProvider(std::function<QJsonArray()> provider) { m_serverListProvider = std::move(provider); }
 
     /// Re-reads `plugin packages` and reloads every enabled frontend plugin.
     void reload();
@@ -103,6 +109,9 @@ public:
     QJsonArray packages() const { return m_packages; }
     QString pluginsDir() const { return m_pluginsDir; }
     bool busy() const { return m_busy; }
+    /// Plugins whose script exceeded its time budget and were disabled for this
+    /// session (a runaway plugin must not keep freezing the interface).
+    QStringList quarantined() const { return m_quarantined; }
     /// Scope label of the plugin that contributed a page.
     QString pagePluginId(const QString &pageId) const;
 
@@ -126,6 +135,13 @@ public:
     QString selectedServerId() const;
     void setSelectedServerId(const QString &id) { m_selectedId = id; }
     void requestPageOpen(const QString &pageId) { emit pageOpenRequested(pageId); }
+    /// True when a plugin exceeded its script budget and was switched off for
+    /// this session (its event handlers are no longer called).
+    bool pluginIsQuarantined(const QString &pluginId) const { return m_quarantined.contains(pluginId); }
+    /// Calls one plugin event handler with a time budget. Returns false when the
+    /// plugin failed or had to be interrupted (and quarantined).
+    bool dispatchOne(const QString &pluginId, QJSEngine *engine, const QJSValue &handler,
+                     const QJSValue &argument);
 
 signals:
     /// Every contributed page is gone: the window should drop plugin pages.
@@ -141,6 +157,12 @@ signals:
 private:
     void loadFrontendPlugins();
     void teardown();
+    /// Evaluates `source` with a hard time budget. Returns false and fills
+    /// `error` when the script threw or had to be interrupted.
+    bool runScript(QJSEngine *engine, const QString &source, const QString &fileName,
+                   const QString &pluginId, int budgetMs, QString *error);
+    /// Watches one plugin call: over budget -> quarantine the plugin.
+    void noteCallCost(const QString &pluginId, qint64 elapsedMs, int budgetMs);
 
     BackendClient *m_backend = nullptr;
     QSettings *m_settings = nullptr;
@@ -153,6 +175,8 @@ private:
     QVector<PluginApi *> m_apis;
     QStringList m_loaded;
     QStringList m_errors;
+    QStringList m_quarantined;
+    std::function<QJsonArray()> m_serverListProvider;
     QString m_selectedId;
     bool m_busy = false;
     int m_generatedPageCounter = 0;

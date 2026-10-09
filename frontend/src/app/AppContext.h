@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QElapsedTimer>
+#include <QHash>
 #include <QObject>
 #include <QPointer>
 #include <QProcess>
@@ -70,6 +72,11 @@ public:
     void refreshEnvironment();
     QJsonObject environment() const { return m_environment; }
 
+    /// Rate limiter for "refresh when this page becomes visible" work. Returns
+    /// true when `key` was not used within `minIntervalMs`; without it, rapid
+    /// page switching spawns one backend process per activation.
+    bool throttle(const QString &key, int minIntervalMs);
+
     /// Starts `mcsm-cli daemon` so scheduled backups keep running while the app
     /// is open. Safe to call repeatedly.
     void startScheduler();
@@ -93,6 +100,8 @@ private slots:
 private:
     explicit AppContext(QObject *parent = nullptr);
     void applyTheme();
+    /// Resolves the backend data root once, without blocking the GUI thread.
+    void resolveDataHome();
     static void applyComboPopupStyle(QApplication *application);
     void loadSettings();
     void saveSettings();
@@ -102,10 +111,13 @@ private:
     PluginHost *m_plugins = nullptr;
     QSettings *m_settings = nullptr;
     QTimer m_pollTimer;
+    QHash<QString, QElapsedTimer> m_throttles;
+    QElapsedTimer m_environmentTimer;
     QPointer<QProcess> m_daemon;
     QString m_selectedId;
     QVector<QPair<QString, QString>> m_activity;
     QJsonObject m_environment;
+    QString m_dataHomeCache;
     int m_pollTicks = 0;
     bool m_experimental = false;
     bool m_bootstrapped = false;

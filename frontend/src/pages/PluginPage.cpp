@@ -331,7 +331,9 @@ void PluginPage::setBusy(bool busy, const QString &message)
 void PluginPage::onActivated()
 {
     const QString id = AppContext::instance()->selectedServerId();
-    if (!id.isEmpty())
+    const bool changed = id != m_serverId;
+    if (!id.isEmpty()
+        && (changed || AppContext::instance()->throttle(QStringLiteral("plugin-page"), 2000)))
         loadInstalled(id);
 }
 

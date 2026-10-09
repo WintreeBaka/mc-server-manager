@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJSEngine>
@@ -11,10 +12,70 @@
 #include <QSettings>
 #include <QUrl>
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 #include "app/BackendClient.h"
 
 namespace mcsm {
 namespace {
+
+/// Time budgets for plugin scripts. Loading does more work (registering pages,
+/// reading storage), event handlers must stay well under one frame budget.
+constexpr int kScriptLoadBudgetMs = 2500;
+constexpr int kScriptEventBudgetMs = 1000;
+
+/// Watches one synchronous script evaluation.
+///
+/// A plugin with `while (true) {}` would otherwise freeze the whole application,
+/// because evaluate() never returns to the event loop (a QTimer in this thread
+/// could not fire). The deadline therefore lives in a helper thread that only
+/// touches QJSEngine::setInterrupted(). This is best effort: V4 checks the flag
+/// in loops, so a script that never yields is stopped within a few ms.
+class ScriptWatchdog
+{
+public:
+    ScriptWatchdog(QJSEngine *engine, int budgetMs)
+        : engine_(engine)
+    {
+        worker_ = std::thread([this, budgetMs]() {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!finished_.wait_for(lock, std::chrono::milliseconds(budgetMs),
+                                    [this]() { return done_; })) {
+                fired_ = true;
+                engine_->setInterrupted(true);
+            }
+        });
+    }
+
+    ~ScriptWatchdog()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            done_ = true;
+        }
+        finished_.notify_all();
+        if (worker_.joinable())
+            worker_.join();
+        engine_->setInterrupted(false);
+    }
+
+    bool fired()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return fired_;
+    }
+
+private:
+    QJSEngine *engine_ = nullptr;
+    std::thread worker_;
+    std::mutex mutex_;
+    std::condition_variable finished_;
+    bool done_ = false;
+    bool fired_ = false;
+};
 
 /// Local copy of the backend helper: the GUI must not depend on backend headers.
 QString humanBytes(qint64 bytes)
@@ -193,7 +254,22 @@ void PluginApi::on(const QString &event, const QJSValue &handler)
 QJSValue PluginApi::include(const QString &relativePath)
 {
     const QString base = m_plugin.value(QStringLiteral("path")).toString();
+    // keep includes inside the plugin directory: no absolute paths, no ".."
+    QString normalized = relativePath;
+    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (normalized.startsWith(QLatin1Char('/')) || normalized.contains(QLatin1String("../"))
+        || normalized.contains(QLatin1Char(':'))) {
+        log(QStringLiteral("include 只允许插件目录内的相对路径：%1").arg(relativePath));
+        return QJSValue(QJSValue::UndefinedValue);
+    }
     const QString path = QDir(base).filePath(relativePath);
+    const QString canonicalBase = QFileInfo(base).canonicalFilePath();
+    const QString canonicalPath = QFileInfo(path).canonicalFilePath();
+    if (canonicalBase.isEmpty() || canonicalPath.isEmpty()
+        || !canonicalPath.startsWith(canonicalBase + QLatin1Char('/'), Qt::CaseInsensitive)) {
+        log(QStringLiteral("include 路径越界：%1").arg(relativePath));
+        return QJSValue(QJSValue::UndefinedValue);
+    }
     if (!QFileInfo::exists(path)) {
         log(QStringLiteral("include 找不到文件：%1").arg(relativePath));
         return QJSValue(QJSValue::UndefinedValue);
@@ -238,10 +314,10 @@ void PluginApi::dispatch(const QString &event, const QJsonObject &payload)
         return;
     const QJSValue argument = m_engine->toScriptValue(payload.toVariantMap());
     for (const QJSValue &handler : it.value()) {
-        QJSValue result = handler.call({argument});
-        if (result.isError())
-            m_host->reportLog(pluginId(),
-                              QStringLiteral("事件 %1 处理失败：%2").arg(event, result.toString()));
+        // Each handler runs behind a watchdog and a misbehaving plugin is taken
+        // out of the loop instead of stalling every later event.
+        if (!m_host->dispatchOne(pluginId(), m_engine, handler, argument))
+            break;
     }
 }
 
@@ -291,6 +367,7 @@ void PluginHost::loadFrontendPlugins()
     m_pages.clear();
     m_pageContent.clear();
     m_errors.clear();
+    m_quarantined.clear();
     teardown();
     emit pagesReset();
 
@@ -382,10 +459,10 @@ void PluginHost::loadFrontendPlugins()
 
         global.setProperty(QStringLiteral("mcsm"), mcsm);
 
-        const QJSValue result = engine->evaluate(source, path);
-        if (result.isError()) {
-            m_errors << QStringLiteral("%1：%2").arg(pluginId, result.toString());
-            reportLog(pluginId, QStringLiteral("脚本执行失败：%1").arg(result.toString()));
+        QString scriptError;
+        if (!runScript(engine, source, path, pluginId, kScriptLoadBudgetMs, &scriptError)) {
+            m_errors << QStringLiteral("%1：%2").arg(pluginId, scriptError);
+            reportLog(pluginId, QStringLiteral("脚本执行失败：%1").arg(scriptError));
             continue;
         }
         m_loaded << pluginId;
@@ -394,6 +471,70 @@ void PluginHost::loadFrontendPlugins()
 
     dispatchEvent(QStringLiteral("app.ready"),
                   QJsonObject {{QStringLiteral("pluginCount"), m_loaded.size()}});
+}
+
+bool PluginHost::runScript(QJSEngine *engine, const QString &source, const QString &fileName,
+                           const QString &pluginId, int budgetMs, QString *error)
+{
+    if (!engine)
+        return false;
+    QElapsedTimer timer;
+    timer.start();
+    QJSValue value;
+    {
+        ScriptWatchdog watchdog(engine, budgetMs);
+        value = engine->evaluate(source, fileName);
+        if (watchdog.fired()) {
+            if (error)
+                *error = QStringLiteral("脚本超过 %1ms 预算，已被强制中断").arg(budgetMs);
+            return false;
+        }
+    }
+    noteCallCost(pluginId, timer.elapsed(), budgetMs);
+    if (value.isError()) {
+        if (error)
+            *error = value.toString();
+        return false;
+    }
+    return true;
+}
+
+void PluginHost::noteCallCost(const QString &pluginId, qint64 elapsedMs, int budgetMs)
+{
+    if (elapsedMs <= budgetMs || pluginId.isEmpty())
+        return;
+    if (m_quarantined.contains(pluginId))
+        return;
+    m_quarantined << pluginId;
+    m_errors << QStringLiteral("%1：单次执行耗时 %2ms（预算 %3ms），已在本会话中停用该插件")
+                    .arg(pluginId)
+                    .arg(elapsedMs)
+                    .arg(budgetMs);
+    reportLog(pluginId, QStringLiteral("执行过慢，已临时停用（可在插件扩展页重新启用）"));
+}
+
+bool PluginHost::dispatchOne(const QString &pluginId, QJSEngine *engine, const QJSValue &handler,
+                             const QJSValue &argument)
+{
+    if (!engine || !handler.isCallable() || pluginIsQuarantined(pluginId))
+        return false;
+    QElapsedTimer timer;
+    timer.start();
+    QJSValue result;
+    {
+        ScriptWatchdog watchdog(engine, kScriptEventBudgetMs);
+        result = handler.call({argument});
+        if (watchdog.fired()) {
+            noteCallCost(pluginId, kScriptEventBudgetMs + 1, kScriptEventBudgetMs);
+            return false;
+        }
+    }
+    noteCallCost(pluginId, timer.elapsed(), kScriptEventBudgetMs);
+    if (result.isError()) {
+        reportLog(pluginId, QStringLiteral("事件处理失败：%1").arg(result.toString()));
+        return false;
+    }
+    return true;
 }
 
 PluginPageInfo PluginHost::pageInfo(const QString &pageId) const
@@ -522,12 +663,12 @@ void PluginHost::setSettingsValue(const QString &key, const QVariant &value)
 
 QJsonArray PluginHost::serverListJson() const
 {
-    if (!m_backend)
-        return QJsonArray();
-    const Reply reply = m_backend->requestSync({QStringLiteral("server"), QStringLiteral("list")}, 30000);
-    if (!reply.ok)
-        return QJsonArray();
-    return reply.data.value(QStringLiteral("servers")).toArray();
+    // Cached snapshot only: spawning mcsm-cli here would block the UI thread for
+    // as long as the command takes (this used to freeze the window whenever a
+    // plugin called mcsm.servers.list()).
+    if (m_serverListProvider)
+        return m_serverListProvider();
+    return QJsonArray();
 }
 
 QString PluginHost::selectedServerId() const

@@ -19,6 +19,7 @@ public:
     explicit ServersPage(QWidget *parent = nullptr);
 
     void onActivated() override;
+    void onDeactivated() override;
     void onServerSelectionChanged(const QString &serverId) override;
 
 signals:
@@ -81,6 +82,10 @@ private:
 
     ServerInfo m_current;
     bool m_busy = false;
+    /// The list/detail are only refreshed while the page is visible: a hidden
+    /// page must not rebuild widgets (or call the backend) on every poll.
+    bool m_active = false;
+    bool m_listDirty = true;
 };
 
 } // namespace mcsm

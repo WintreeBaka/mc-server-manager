@@ -7,16 +7,16 @@
         $env:GITHUB_TOKEN = "ghp_xxx"
         .\tools\create-release.ps1
 
-    默认行为（1.1.0）：
-        tag     : v1.1.0
-        说明    : docs\RELEASE_NOTES-1.1.0.md
-        附件    : dist\McServerManager-1.1.0-win64.zip   （纯程序便携版）
+    默认行为（1.1.1）：
+        tag     : v1.1.1
+        说明    : docs\RELEASE_NOTES-1.1.1.md
+        附件    : dist\McServerManager-1.1.1-win64.zip   （纯程序便携版）
                   docs\PLUGIN-SDK.md                     （接口文档，单独附件）
 
     已存在同名 Release 时会复用并补传缺失的附件，不会重复创建。
 #>
 param(
-    [string]$Version = "1.1.0",
+    [string]$Version = "1.1.1",
     [string]$Repo = "WintreeBaka/mc-server-manager",
     [string]$Tag = "",
     [string]$Title = "",

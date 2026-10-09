@@ -219,7 +219,10 @@ void DashboardPage::onServersChanged()
 
 void DashboardPage::onActivated()
 {
-    refresh();
+    // Rapid page switching must not spawn a backend process per visit; the
+    // background poller keeps the data fresh anyway.
+    if (AppContext::instance()->throttle(QStringLiteral("dashboard"), 2500))
+        refresh();
 }
 
 void DashboardPage::refresh()

@@ -54,6 +54,10 @@ private:
     /// Enables / disables the host JDK card depending on the experimental switch.
     void updateJdkSection();
     void detectEnvironment();
+    /// Writes the doctor result into the environment card. Connected exactly once
+    /// in the constructor: connecting per page activation leaked a connection for
+    /// every visit, so each environment update ran the handler N times.
+    void applyDoctor(const QJsonObject &doctor);
     void browseBackend();
     void applyDataHome(const QString &path);
     void openPath(const QString &path);

@@ -1,22 +1,23 @@
 #pragma once
 
-#include <QPixmap>
 #include <QWidget>
 
-class QParallelAnimationGroup;
+class QPropertyAnimation;
 
 namespace mcsm {
 
 /// Page container with slide transitions.
 ///
-/// Only one page widget is ever visible: the new page slides in while a
-/// *snapshot* of the previous page fades out. Keeping two live pages on screen
-/// (or leaving them visible after an interrupted animation) was what caused the
-/// stacking and ghosting artefacts.
+/// Design notes (performance + robustness):
+///  * Only one page is ever visible: the outgoing page is hidden *before* the
+///    new one slides in, so an interrupted animation can never stack pages.
+///  * No snapshot of the outgoing page is taken. Grabbing a full page pixmap on
+///    every switch was the main CPU cost when clicking through the menus fast.
+///  * While a transition runs, further switches are applied instantly -
+///    animating every step of a burst was wasted work and felt laggy.
 class AnimatedStack : public QWidget
 {
     Q_OBJECT
-    Q_PROPERTY(qreal ghostOpacity READ ghostOpacity WRITE setGhostOpacity)
 
 public:
     explicit AnimatedStack(QWidget *parent = nullptr);
@@ -38,8 +39,8 @@ public:
     void setDuration(int milliseconds) { m_duration = milliseconds; }
     int duration() const { return m_duration; }
 
-    qreal ghostOpacity() const { return m_ghostOpacity; }
-    void setGhostOpacity(qreal value);
+    /// True while a slide animation is running.
+    bool transitionRunning() const { return m_slide != nullptr; }
 
 signals:
     void currentChanged(int index);
@@ -47,18 +48,16 @@ signals:
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
-    void paintEvent(QPaintEvent *event) override;
 
 private:
-    /// Stops pending animations, drops the snapshot and hides every page.
+    /// Stops a pending animation and hides every page.
     void resetTransition();
+    void stopTransition();
 
     QVector<QWidget *> m_pages;
     int m_current = -1;
     int m_duration = 300;
-    QParallelAnimationGroup *m_group = nullptr;
-    QPixmap m_ghost;
-    qreal m_ghostOpacity = 0.0;
+    QPropertyAnimation *m_slide = nullptr;
 };
 
 } // namespace mcsm

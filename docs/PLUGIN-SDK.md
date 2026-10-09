@@ -1,6 +1,6 @@
 # McServerManager 插件接口说明（Plugin SDK）
 
-版本：**apiVersion 1** · 适用于 McServerManager 1.1.0 及以上
+版本：**apiVersion 1** · 适用于 McServerManager 1.1.1 及以上
 
 本文档描述 McServerManager 的**插件包（plugin package）**机制：如何打包、导入、启用，以及
 前端（桌面界面）、后端（CLI 能力）、支持库 / Web 面板三类扩展分别可以调用哪些接口。
@@ -101,7 +101,8 @@ my-plugin-1.0.0.zip
   "id": "com.example.ops-console",
   "name": "运维面板",
   "version": "1.0.0",
-  "apiVersion": "1",
+  "apiVersion": 1,
+  "minManagerVersion": "1.1.1",
   "scope": "global",
   "description": "一句话说明这个插件做什么",
   "author": "你的名字",
@@ -136,7 +137,8 @@ my-plugin-1.0.0.zip
 | `id` | 是 | 插件唯一标识，建议反向域名（`com.example.my-plugin`）。只允许 `A-Za-z0-9._-`，用作安装目录名 |
 | `name` | 是 | 显示名称（支持中文） |
 | `version` | 是 | 插件版本，如 `1.0.0` |
-| `apiVersion` | | 目标接口版本，当前只支持主版本 `1`；主版本不匹配会拒绝安装 |
+| `apiVersion` | | **整数**接口版本（见 §4.3），必须落在管理器支持的区间内，否则拒绝加载 |
+| `minManagerVersion` | | 建议使用的管理器版本，**只提示用户，不参与硬校验** |
 | `scope` | | `frontend` / `backend` / `web` / `global` / `auto`（默认 `auto`，即自动识别） |
 | `description` / `author` / `homepage` / `license` | | 元信息，显示在插件列表里 |
 | `permissions` | | 插件声明的权限（见第 8 节），用于提示用户，不做强制拦截 |
@@ -167,7 +169,48 @@ my-plugin-1.0.0.zip
 | `frontend/` + `backend/` | `global`（全局） |
 | 任意两项以上 | `global` |
 
-3. 识别不出内容、入口文件不存在、或 `apiVersion` 主版本不符：**拒绝导入**并给出具体原因。
+3. 识别不出内容、入口文件不存在、或 `apiVersion` 超出支持区间：**拒绝导入**并给出具体原因。
+
+### 4.3 apiVersion：整数区间
+
+`apiVersion` 是**整数**，不是语义化版本：管理器每增加**一批新接口**就 `+1`。
+
+| 常量 | 含义 |
+| --- | --- |
+| `SUPPORTED_MIN_API` | 仍然支持的最老接口级别。**只有破坏性变更时**才抬高——抬高的同时旧插件自然淘汰 |
+| `SUPPORTED_MAX_API` | 当前级别，等于管理器的 `apiVersion` |
+
+* 插件的 `apiVersion` **不在 `[MIN, MAX]` 区间内 → 拒绝加载**，日志与界面都会写明：
+  `插件 apiVersion 2 不受支持：本管理器支持 1 - 1`。
+* 兼容写法：`apiVersion: 1`（推荐整数）。写成字符串 `"1"` 仍可加载，但会给出"请写成整数"的提示。
+* 省略 `apiVersion` 时按当前级别处理（`SUPPORTED_MAX_API`）。
+* `minManagerVersion` 只是给用户看的提示：管理器版本更低时给出警告，**不会**阻止插件加载。
+
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "minManagerVersion": "1.1.1"
+}
+```
+
+当前级别可以用 `mcsm-cli plugin api` 查询：
+
+```json
+{
+  "apiVersion": 1,
+  "supportedMinApi": 1,
+  "supportedMaxApi": 1,
+  "managerVersion": "1.1.1",
+  "apiVersionPolicy": {
+    "type": "integer",
+    "bumpOn": "每增加一批新接口 +1",
+    "rejectWhen": "不在 supportedMinApi..supportedMaxApi 区间内",
+    "minManagerVersion": "仅提示用户，不参与硬校验"
+  }
+}
+```
 
 > 导入对话框会先调用 `plugin package inspect`，并把识别结果（例如“识别为：全局（前端 + 后端）”）
 > 显示给用户，确认后才会真正写入磁盘。
@@ -193,8 +236,8 @@ my-plugin-1.0.0.zip
 
 | 属性 | 说明 |
 | --- | --- |
-| `mcsm.version` | 管理器版本，如 `1.1.0` |
-| `mcsm.apiVersion` | 接口版本 `"1"` |
+| `mcsm.version` | 管理器版本，如 `1.1.1` |
+| `mcsm.apiVersion` | 当前接口级别（整数，如 `1`） |
 | `mcsm.plugin.id / .name / .version / .scope / .path` | 当前插件信息 |
 
 ### 5.2 日志与通知
@@ -248,10 +291,13 @@ mcsm.ui.openPage(pageId);   // 让管理器跳转到该页面
 ### 5.4 服务器数据
 
 ```js
-var servers = mcsm.servers.list();   // [{id,name,type,status,port,memory,...}]
+var servers = mcsm.servers.list();   // 缓存快照，立即返回，不会阻塞界面
 var current = mcsm.servers.selected();
-mcsm.refreshServers();
+mcsm.refreshServers();               // 需要最新数据时再刷新（异步，刷新后触发 servers.refreshed 事件）
 ```
+
+> `mcsm.servers.list()` **不会**去调用后端：它读取管理器已有的缓存，
+> 因此即使后端很慢也不会卡住界面（旧版本会同步启动 `mcsm-cli`，一个插件就能让窗口卡住）。
 
 ### 5.5 调用后端
 
@@ -341,7 +387,7 @@ mcsm.include("frontend/util.js");   // 在同一个引擎里求值，可共享�
 
 ```json
 {
-  "apiVersion": "1",
+  "apiVersion": 1,
   "plugin": "com.example.perf-tuner",
   "method": "server.beforeStart",
   "params": { "server": { "id": "survival", "memory": "16G" } },
@@ -516,11 +562,40 @@ Python 版同理：读 `sys.stdin` 一行、解析 JSON、`print(json.dumps(resu
 3. 导入前必须先通过 `plugin package inspect`：id 合法性、`apiVersion`、入口文件存在性都会被校验。
 4. 插件只能写入自己的安装目录与 `.data/<id>` 数据目录。
 
+### 8.1 安装位置：只在管理器目录内
+
+* 插件**只能**安装到 `<数据目录>/plugins/<插件 id>/`（Windows 默认
+  `%LOCALAPPDATA%\McServerManager\plugins`）。安装前会校验目标目录确实位于该根目录之内，
+  越界直接拒绝（`UNSAFE_PLUGIN_PATH`）——恶意插件无法把文件写到系统目录或别处。
+* 插件 id 只允许 `A-Za-z0-9._-`，不能包含路径分隔符，所以无法用 `../` 之类的方式跳出插件目录。
+
+### 8.2 压缩包与入口路径校验
+
+| 检查项 | 行为 |
+| --- | --- |
+| 绝对路径 / 盘符 / UNC（`C:\…`、`\\server\…`、`/etc/…`） | 拒绝解压（提示"压缩包包含不安全路径"） |
+| `..` 跳出解压目录（zip-slip） | 拒绝解压 |
+| 符号链接指向外部 | 拒绝（解压后逐个校验落盘路径） |
+| 解压后逐个校验落盘文件 | 必须仍在插件目录内，否则报错并清理 |
+| `frontend` / `backend` / `web` 入口、`web.service` | 必须是包内相对路径，绝对路径或 `..` 直接拒绝 |
+| 后端入口、`include()` 的真实路径 | 必须位于该插件目录内（符号链接会被展开检查） |
+
+### 8.3 运行期隔离（一条卡住不会拖死全部）
+
+| 机制 | 说明 |
+| --- | --- |
+| 前端脚本预算 | 加载 2500ms、单次事件 1000ms；超时会被强制中断 |
+| 前端脚本失控 | 连续超预算的插件在**本次会话内停用**（不再接收事件），插件扩展页会给出提示 |
+| 后端插件 | 独立进程 + 超时保护；失败只变成 `warnings`，不影响其它操作 |
+| 界面线程 | 后端调用全部异步且带看门狗；插件拿到的服务器列表是缓存快照，不会同步等待后端 |
+| 定时备份守护进程 | 启动时带 `--parent-pid`，管理器被强杀后守护进程自动退出，不留孤儿进程 |
+
 ---
 
 ## 9. 版本兼容
 
-* `apiVersion` 采用“主版本必须相同”策略：`apiVersion: "1.1"` 与 `"1"` 兼容，`"2"` 会被拒绝安装。
+* `apiVersion` 是整数区间校验（见 §4.3）：只增加新接口时抬 `SUPPORTED_MAX_API`；
+  破坏性变更时抬 `SUPPORTED_MIN_API`，旧插件被明确拒绝而不是行为异常。
 * 管理器新增能力时只增加字段、不删除旧字段；插件应当忽略不认识的键。
 * 查询当前接口定义（机器可读，适合生成文档或做自动检查）：
 
@@ -530,11 +605,29 @@ mcsm-cli plugin api --pretty
 
 ```json
 {
-  "apiVersion": "1",
+  "apiVersion": 1,
+  "supportedMinApi": 1,
+  "supportedMaxApi": 1,
+  "managerVersion": "1.1.1",
+  "apiVersionPolicy": {
+    "type": "integer",
+    "bumpOn": "每增加一批新接口 +1",
+    "rejectWhen": "不在 supportedMinApi..supportedMaxApi 区间内",
+    "minManagerVersion": "仅提示用户，不参与硬校验"
+  },
   "manager": "McServerManager plugin package API",
   "package": {
     "layout": ["plugin.json", "frontend/index.js", "backend/index.js", "web/index.html", "README.md"],
-    "requiredFields": ["id", "name", "version"]
+    "requiredFields": ["id", "name", "version"],
+    "apiVersionType": "整数，每增加一批新接口 +1",
+    "supportedApiRange": "1-1"
+  },
+  "security": {
+    "installRoot": "C:/Users/<you>/AppData/Local/McServerManager/plugins",
+    "installRootPolicy": "插件只能安装在管理器数据目录的 plugins/ 下",
+    "archiveRules": ["禁止绝对路径 / 盘符 / UNC", "禁止 .. 跳出解压目录", "禁止符号链接",
+                     "解压后逐个校验落盘路径仍在插件目录内"],
+    "entryRules": "frontend/backend/web 入口必须是包内相对路径"
   },
   "scopes": { "frontend": "只扩展桌面界面", "backend": "只扩展后端", "web": "支持库 / Web 面板",
               "global": "同时包含前端与后端内容", "auto": "按目录结构自动识别" },

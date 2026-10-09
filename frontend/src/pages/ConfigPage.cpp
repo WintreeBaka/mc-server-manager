@@ -600,7 +600,9 @@ void ConfigPage::setBusy(bool busy)
 void ConfigPage::onActivated()
 {
     const QString id = AppContext::instance()->selectedServerId();
-    if (!id.isEmpty() && id != m_serverId)
+    const bool changed = id != m_serverId;
+    if (!id.isEmpty()
+        && (changed || AppContext::instance()->throttle(QStringLiteral("config-read"), 1500)))
         loadServer(id);
 }
 

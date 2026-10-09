@@ -96,6 +96,7 @@ SettingsPage::SettingsPage(QWidget *parent)
         m_backendStatus->setText(available ? QStringLiteral("✔ 后端可用")
                                            : QStringLiteral("✕ 未找到 mcsm-cli"));
     });
+    connect(context, &AppContext::environmentChanged, this, &SettingsPage::applyDoctor);
 
     setSection(0);
     updateNavState();
@@ -730,51 +731,55 @@ void SettingsPage::openPath(const QString &path)
 
 void SettingsPage::detectEnvironment()
 {
+    // Rate limited inside AppContext: `doctor` shells out to docker, so running
+    // it on every page activation made rapid switching expensive.
+    AppContext *context = AppContext::instance();
+    context->refreshEnvironment();
+    if (!context->environment().isEmpty())
+        applyDoctor(context->environment());
+}
+
+void SettingsPage::applyDoctor(const QJsonObject &doctor)
+{
     const Palette &palette = ThemeManager::instance()->palette();
-    connect(AppContext::instance(), &AppContext::environmentChanged, this,
-            [this, palette](const QJsonObject &doctor) {
-                const QJsonObject docker = doctor.value(QStringLiteral("docker")).toObject();
-                const bool running = docker.value(QStringLiteral("daemonRunning")).toBool();
-                m_dockerValue->setText(running ? QStringLiteral("运行中") : QStringLiteral("未运行"));
-                m_dockerValue->setStyleSheet(
-                    QStringLiteral("color: %1;")
-                        .arg((running ? palette.success : palette.danger).name()));
-                m_dockerHint->setText(
-                    running ? QStringLiteral("引擎版本 %1")
-                                  .arg(docker.value(QStringLiteral("version")).toString())
-                            : docker.value(QStringLiteral("error")).toString());
+    const QJsonObject docker = doctor.value(QStringLiteral("docker")).toObject();
+    const bool running = docker.value(QStringLiteral("daemonRunning")).toBool();
+    m_dockerValue->setText(running ? QStringLiteral("运行中") : QStringLiteral("未运行"));
+    m_dockerValue->setStyleSheet(QStringLiteral("color: %1;")
+                                     .arg((running ? palette.success : palette.danger).name()));
+    m_dockerHint->setText(running ? QStringLiteral("引擎版本 %1")
+                                        .arg(docker.value(QStringLiteral("version")).toString())
+                                  : docker.value(QStringLiteral("error")).toString());
 
-                const QJsonObject java = doctor.value(QStringLiteral("java")).toObject();
-                const QJsonArray images = java.value(QStringLiteral("images")).toArray();
-                QStringList labels;
-                for (const QJsonValue &value : images)
-                    labels << value.toString();
-                m_javaValue->setText(images.isEmpty() ? QStringLiteral("尚未准备")
-                                                      : QStringLiteral("%1 个镜像").arg(images.size()));
-                m_javaHint->setText(labels.isEmpty() ? QStringLiteral("创建服务器时会自动拉取")
-                                                     : labels.join(QStringLiteral(" · ")));
+    const QJsonObject java = doctor.value(QStringLiteral("java")).toObject();
+    const QJsonArray images = java.value(QStringLiteral("images")).toArray();
+    QStringList labels;
+    for (const QJsonValue &value : images)
+        labels << value.toString();
+    m_javaValue->setText(images.isEmpty() ? QStringLiteral("尚未准备")
+                                          : QStringLiteral("%1 个镜像").arg(images.size()));
+    m_javaHint->setText(labels.isEmpty() ? QStringLiteral("创建服务器时会自动拉取")
+                                         : labels.join(QStringLiteral(" · ")));
 
-                const QJsonObject tools = doctor.value(QStringLiteral("tools")).toObject();
-                QStringList available;
-                if (tools.value(QStringLiteral("tar")).toBool())
-                    available << QStringLiteral("tar");
-                if (tools.value(QStringLiteral("powershell")).toBool())
-                    available << QStringLiteral("PowerShell");
-                m_toolsValue->setText(available.isEmpty() ? QStringLiteral("未检测到")
-                                                          : available.join(QStringLiteral(" · ")));
-                m_toolsHint->setText(QStringLiteral("用于打包 / 解包存档备份"));
+    const QJsonObject tools = doctor.value(QStringLiteral("tools")).toObject();
+    QStringList available;
+    if (tools.value(QStringLiteral("tar")).toBool())
+        available << QStringLiteral("tar");
+    if (tools.value(QStringLiteral("powershell")).toBool())
+        available << QStringLiteral("PowerShell");
+    m_toolsValue->setText(available.isEmpty() ? QStringLiteral("未检测到")
+                                              : available.join(QStringLiteral(" · ")));
+    m_toolsHint->setText(QStringLiteral("用于打包 / 解包存档备份"));
 
-                const QJsonObject host = doctor.value(QStringLiteral("host")).toObject();
-                m_aboutHome->setText(
-                    QStringLiteral("数据目录：%1").arg(host.value(QStringLiteral("dataRoot")).toString()));
-                m_aboutLog->setText(QStringLiteral("后端日志：%1/logs/backend.log")
-                                        .arg(host.value(QStringLiteral("dataRoot")).toString()));
-                m_aboutVersion->setText(QStringLiteral("McServerManager 1.0.0 · Qt %1 · %2")
-                                            .arg(host.value(QStringLiteral("qtVersion")).toString(),
-                                                 host.value(QStringLiteral("os")).toString()));
-            },
-            Qt::UniqueConnection);
-    AppContext::instance()->refreshEnvironment();
+    const QJsonObject host = doctor.value(QStringLiteral("host")).toObject();
+    m_aboutHome->setText(
+        QStringLiteral("数据目录：%1").arg(host.value(QStringLiteral("dataRoot")).toString()));
+    m_aboutLog->setText(QStringLiteral("后端日志：%1/logs/backend.log")
+                            .arg(host.value(QStringLiteral("dataRoot")).toString()));
+    m_aboutVersion->setText(QStringLiteral("McServerManager %1 · Qt %2 · %3")
+                                .arg(QCoreApplication::applicationVersion(),
+                                     host.value(QStringLiteral("qtVersion")).toString(),
+                                     host.value(QStringLiteral("os")).toString()));
 }
 
 void SettingsPage::onActivated()

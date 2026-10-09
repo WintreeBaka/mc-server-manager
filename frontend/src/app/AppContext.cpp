@@ -50,13 +50,18 @@ AppContext::AppContext(QObject *parent)
     m_plugins = new PluginHost(this);
     m_plugins->setBackend(m_backend);
     m_plugins->setSettings(m_settings);
+    // Plugin scripts read the cached server list: a JS call must never spawn a
+    // blocking backend process on the UI thread.
+    m_plugins->setServerListProvider([this]() { return m_servers->toJsonArray(); });
 
     m_pollTimer.setInterval(kPollIntervalMs);
     connect(&m_pollTimer, &QTimer::timeout, this, &AppContext::onPoll);
     connect(m_backend, &BackendClient::availabilityChanged, this, [this](bool available) {
         emit backendAvailabilityChanged(available);
-        if (available)
+        if (available) {
+            resolveDataHome();
             m_plugins->reload();
+        }
     });
     connect(ThemeManager::instance(), &ThemeManager::themeChanged, this, &AppContext::onThemeChanged);
 
@@ -74,10 +79,32 @@ void AppContext::bootstrap()
     loadSettings();
     applyTheme();
     m_pollTimer.start();
+    resolveDataHome();
     refreshServers();
     m_plugins->reload();
     if (m_settings->value(QStringLiteral("scheduler/enabled"), true).toBool())
         startScheduler();
+}
+
+/// Asks the backend for its data root once (used by the "关于" card and the
+/// plugin page). Deliberately asynchronous: requestSync would freeze the UI.
+void AppContext::resolveDataHome()
+{
+    if (!m_backend->isConfigured() || !m_dataHomeCache.isEmpty())
+        return;
+    m_backend->request({QStringLiteral("version")}, this, [this](const Reply &reply) {
+        if (reply.ok)
+            m_dataHomeCache = reply.data.value(QStringLiteral("home")).toString();
+    });
+}
+
+bool AppContext::throttle(const QString &key, int minIntervalMs)
+{
+    QElapsedTimer &timer = m_throttles[key];
+    if (timer.isValid() && timer.elapsed() < minIntervalMs)
+        return false;
+    timer.restart();
+    return true;
 }
 
 void AppContext::loadSettings()
@@ -252,13 +279,9 @@ QString AppContext::dataHome() const
 {
     if (!m_backend->dataHome().isEmpty())
         return m_backend->dataHome();
-    const Reply reply = m_backend->requestSync({QStringLiteral("version")}, 20000);
-    if (reply.ok) {
-        const QString home = reply.data.value(QStringLiteral("home")).toString();
-        if (!home.isEmpty())
-            return home;
-    }
-    return QString();
+    // Resolved asynchronously in the constructor/bootstrap: never block the GUI
+    // thread just to display a path in the settings page.
+    return m_dataHomeCache;
 }
 
 void AppContext::setDataHome(const QString &home)
@@ -316,6 +339,12 @@ void AppContext::refreshEnvironment()
 {
     if (!m_backend->isConfigured())
         return;
+    // `doctor` shells out to docker/tasklist: it is far too expensive to run on
+    // every page activation, so page-triggered checks are rate limited. The
+    // background poller (every ~20s) is the only unfiltered caller.
+    if (m_environmentTimer.isValid() && m_environmentTimer.elapsed() < 4000)
+        return;
+    m_environmentTimer.restart();
     m_backend->request({QStringLiteral("doctor")}, this, [this](const Reply &reply) {
         if (!reply.ok)
             return;
@@ -366,6 +395,8 @@ void AppContext::startScheduler()
                                 ? QStringList()
                                 : QStringList {QStringLiteral("--home"), m_backend->dataHome()};
     arguments << QStringLiteral("daemon") << QStringLiteral("--interval") << QStringLiteral("60");
+    // let the daemon notice a killed GUI and exit instead of polling forever
+    arguments << QStringLiteral("--parent-pid") << QString::number(QCoreApplication::applicationPid());
     process->setProgram(m_backend->executable());
     process->setArguments(arguments);
     // The daemon writes one JSON line per tick; forwarding avoids ever blocking

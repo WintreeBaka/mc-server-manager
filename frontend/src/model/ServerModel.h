@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QJsonArray>
 #include <QVector>
 
 #include "model/ServerTypes.h"
@@ -42,12 +43,16 @@ public:
     int rowOf(const QString &id) const;
     int runningCount() const;
     int errorCount() const;
+    /// Snapshot for plugin scripts (mcsm.servers.list): reads the cached list
+    /// instead of spawning the backend, so a plugin can never block the UI.
+    QJsonArray toJsonArray() const;
 
 signals:
     void changed();
 
 private:
     QVector<ServerInfo> m_servers;
+    QJsonArray m_published;
 };
 
 } // namespace mcsm

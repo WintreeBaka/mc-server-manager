@@ -50,7 +50,8 @@ public:
     void request(const QStringList &arguments,
                  QObject *context,
                  ResultHandler handler,
-                 ProgressHandler progress = ProgressHandler());
+                 ProgressHandler progress = ProgressHandler(),
+                 int timeoutMs = 0);
 
     Reply requestSync(const QStringList &arguments, int timeoutMs = 120000);
 

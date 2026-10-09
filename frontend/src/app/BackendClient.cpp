@@ -8,11 +8,17 @@
 #include <QJsonParseError>
 #include <QSharedPointer>
 #include <QStandardPaths>
+#include <QTimer>
 
 namespace mcsm {
 namespace {
 
 const char *kBackendName = "mcsm-cli";
+
+/// Watchdog for async requests. Long enough for `install` (download + image
+/// pull) and `server start --wait`, short enough that a wedged backend process
+/// is cleaned up instead of leaking a handler (and a hidden process) forever.
+constexpr int kDefaultRequestTimeoutMs = 15 * 60 * 1000;
 
 QString withExtension(const QString &path)
 {
@@ -199,7 +205,8 @@ QStringList BackendClient::globalFlags() const
 void BackendClient::request(const QStringList &arguments,
                             QObject *context,
                             ResultHandler handler,
-                            ProgressHandler progress)
+                            ProgressHandler progress,
+                            int timeoutMs)
 {
     if (!isConfigured()) {
         Reply reply;
@@ -221,6 +228,10 @@ void BackendClient::request(const QStringList &arguments,
     const QStringList args = arguments;
     QPointer<QProcess> guard(process);
     QSharedPointer<StreamState> state = QSharedPointer<StreamState>::create();
+    // one reply per request: the watchdog and the finished handler race otherwise
+    auto delivered = QSharedPointer<bool>::create(false);
+    // keep the watchdog out of the queue when the process is gone
+    QPointer<QTimer> watchdog(new QTimer(process));
 
     QObject::connect(process, &QProcess::readyReadStandardOutput, process,
                      [guard, state, progress]() {
@@ -230,7 +241,11 @@ void BackendClient::request(const QStringList &arguments,
                      });
 
     QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), process,
-                     [this, guard, state, args, handler, progress](int exitCode, QProcess::ExitStatus) {
+                     [this, guard, state, args, handler, progress, delivered](int exitCode,
+                                                                             QProcess::ExitStatus) {
+                         if (*delivered)
+                             return;
+                         *delivered = true;
                          if (!guard)
                              return;
                          consumeChunk(state.data(), guard->readAllStandardOutput(), progress);
@@ -244,9 +259,10 @@ void BackendClient::request(const QStringList &arguments,
                      });
 
     QObject::connect(process, &QProcess::errorOccurred, process,
-                     [this, guard, args, handler](QProcess::ProcessError error) {
-                         if (!guard || error != QProcess::FailedToStart)
+                     [this, guard, args, handler, delivered](QProcess::ProcessError error) {
+                         if (!guard || error != QProcess::FailedToStart || *delivered)
                              return;
+                         *delivered = true;
                          m_active.remove(guard.data());
                          Reply reply;
                          reply.code = QStringLiteral("BACKEND_FAILED");
@@ -257,6 +273,36 @@ void BackendClient::request(const QStringList &arguments,
                              handler(reply);
                          guard->deleteLater();
                      });
+
+    const int effectiveTimeout = timeoutMs > 0 ? timeoutMs : kDefaultRequestTimeoutMs;
+    QObject::connect(watchdog, &QTimer::timeout, process,
+                     [this, guard, state, args, handler, delivered, effectiveTimeout]() {
+                         if (*delivered)
+                             return;
+                         *delivered = true;
+                         if (guard) {
+                             guard->kill();
+                             guard->waitForFinished(2000);
+                             consumeChunk(state.data(), guard->readAllStandardOutput(),
+                                          ProgressHandler());
+                             m_active.remove(guard.data());
+                         }
+                         emit commandFinished(args, false);
+                         Reply reply;
+                         reply.code = QStringLiteral("BACKEND_TIMEOUT");
+                         reply.message = QStringLiteral("后端命令超时（已终止）");
+                         reply.detail = QStringLiteral("%1 秒内未返回：mcsm-cli %2")
+                                            .arg(effectiveTimeout / 1000)
+                                            .arg(args.join(QLatin1Char(' ')));
+                         reply.rawOutput = state->rawLines.join(QLatin1Char('\n'));
+                         if (handler)
+                             handler(reply);
+                         if (guard)
+                             guard->deleteLater();
+                     });
+    watchdog->setSingleShot(true);
+    watchdog->setInterval(effectiveTimeout);
+    watchdog->start();
 
     process->start();
 }

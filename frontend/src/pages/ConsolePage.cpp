@@ -144,6 +144,8 @@ QWidget *ConsolePage::buildConsoleCard()
 
 void ConsolePage::onActivated()
 {
+    if (m_releaseTimer)
+        m_releaseTimer->stop();
     const QString id = AppContext::instance()->selectedServerId();
     if (id.isEmpty())
         return;
@@ -152,6 +154,30 @@ void ConsolePage::onActivated()
         loadHistory(id);
         startStream(id, 300);
     }
+}
+
+void ConsolePage::onDeactivated()
+{
+    // Deferred: hopping to another page and back within a few seconds keeps the
+    // stream alive (no restart cost), but a page that stays in the background
+    // releases its process instead of tailing logs forever.
+    scheduleStreamRelease();
+}
+
+void ConsolePage::scheduleStreamRelease()
+{
+    if (!m_stream)
+        return;
+    if (!m_releaseTimer) {
+        m_releaseTimer = new QTimer(this);
+        m_releaseTimer->setSingleShot(true);
+        m_releaseTimer->setInterval(5000);
+        connect(m_releaseTimer, &QTimer::timeout, this, [this]() {
+            m_log->appendLine(QStringLiteral("[mcsm] 已暂停后台日志跟随（返回本页自动继续）"));
+            stopStream();
+        });
+    }
+    m_releaseTimer->start();
 }
 
 void ConsolePage::onServerSelectionChanged(const QString &serverId)

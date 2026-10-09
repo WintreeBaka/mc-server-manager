@@ -332,9 +332,16 @@ void ServersPage::rebuildList()
 
 void ServersPage::onServersChanged()
 {
+    // a hidden page only records that it is stale
+    if (!m_active) {
+        m_listDirty = true;
+        return;
+    }
     rebuildList();
+    m_listDirty = false;
     const QString id = AppContext::instance()->selectedServerId();
-    if (!id.isEmpty())
+    if (!id.isEmpty()
+        && AppContext::instance()->throttle(QStringLiteral("servers-detail"), 1500))
         loadDetail(id);
 }
 
@@ -367,10 +374,23 @@ void ServersPage::onServerSelectionChanged(const QString &serverId)
 
 void ServersPage::onActivated()
 {
+    m_active = true;
     const QString id = AppContext::instance()->selectedServerId();
-    if (!id.isEmpty())
+    // always load when the selected server changed; only rate limit re-visits of
+    // the same server (rapid menu switching should not spawn a process per click)
+    const bool changed = id != m_current.id;
+    if (!id.isEmpty()
+        && (changed || AppContext::instance()->throttle(QStringLiteral("servers-detail"), 1500)))
         loadDetail(id);
-    rebuildList();
+    if (m_listDirty) {
+        rebuildList();
+        m_listDirty = false;
+    }
+}
+
+void ServersPage::onDeactivated()
+{
+    m_active = false;
 }
 
 void ServersPage::loadDetail(const QString &serverId)

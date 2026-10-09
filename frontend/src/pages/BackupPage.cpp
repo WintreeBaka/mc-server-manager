@@ -390,7 +390,9 @@ void BackupPage::setBusy(bool busy, const QString &message)
 void BackupPage::onActivated()
 {
     const QString id = AppContext::instance()->selectedServerId();
-    if (!id.isEmpty())
+    const bool changed = id != m_serverId;
+    if (!id.isEmpty()
+        && (changed || AppContext::instance()->throttle(QStringLiteral("backup-list"), 2000)))
         loadBackups(id);
 }
 

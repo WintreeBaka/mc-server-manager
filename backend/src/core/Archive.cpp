@@ -2,11 +2,13 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 
 #include "core/Logger.h"
 #include "core/ProcessRunner.h"
+#include "core/StringUtil.h"
 
 namespace mcsm {
 namespace {
@@ -122,6 +124,20 @@ bool Archive::extractZip(const QString &archivePath, const QString &destination,
         return false;
     }
 
+    // Security: a package must never be able to write outside the plugin
+    // directory (zip-slip / absolute paths / drive letters). The entries are
+    // checked *before* extraction, and the result is verified afterwards.
+    const QStringList entries = listEntries(archivePath);
+    for (const QString &entry : entries) {
+        if (!isSafeRelativePath(entry)) {
+            if (error)
+                *error = QStringLiteral("压缩包包含不安全路径，已拒绝解压：%1").arg(entry);
+            Logger::warn(QStringLiteral("archive"),
+                         QStringLiteral("refused unsafe entry '%1' in %2").arg(entry, archivePath));
+            return false;
+        }
+    }
+
     // `-o<dir>` must be a single token: 7-Zip rejects a separated value.
     const ProcessResult result = ProcessRunner::run(
         tool,
@@ -139,7 +155,107 @@ bool Archive::extractZip(const QString &archivePath, const QString &destination,
                      QStringLiteral("extract failed: %1").arg(result.errorText()));
         return false;
     }
+
+    // Post-extraction check: nothing may have landed outside the destination
+    // (covers symlinks and junctions that the listing cannot see through).
+    QDirIterator iterator(destination,
+                          QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden
+                              | QDir::System,
+                          QDirIterator::Subdirectories);
+    while (iterator.hasNext()) {
+        const QString path = iterator.next();
+        if (!isInside(destination, path)) {
+            if (error)
+                *error = QStringLiteral("压缩包试图写入目录之外的文件：%1").arg(path);
+            Logger::warn(QStringLiteral("archive"),
+                         QStringLiteral("extracted path escapes destination: %1").arg(path));
+            return false;
+        }
+        if (QFileInfo(path).isSymLink()) {
+            if (error)
+                *error = QStringLiteral("压缩包包含符号链接，已拒绝：%1").arg(path);
+            return false;
+        }
+    }
     return true;
+}
+
+QStringList Archive::listEntries(const QString &archivePath, QString *error)
+{
+    QStringList entries;
+    const QString tool = toolPath();
+    if (tool.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("未找到可用的解压工具");
+        return entries;
+    }
+    // -slt switches the listing to "technical" key = value lines
+    const ProcessResult result = ProcessRunner::run(
+        tool, {QStringLiteral("l"), QStringLiteral("-slt"),
+               QDir::toNativeSeparators(archivePath)},
+        60000);
+    if (!result.ok()) {
+        if (error)
+            *error = result.errorText();
+        return entries;
+    }
+    const QString archiveName = QFileInfo(archivePath).fileName();
+    const QStringList lines = StringUtil::splitLines(result.stdOut);
+    bool first = true;
+    for (const QString &line : lines) {
+        if (!line.startsWith(QLatin1String("Path = ")))
+            continue;
+        const QString value = line.mid(7).trimmed();
+        if (value.isEmpty())
+            continue;
+        if (first) {
+            // the first Path is the archive itself
+            first = false;
+            if (QFileInfo(value).fileName().compare(archiveName, Qt::CaseInsensitive) == 0)
+                continue;
+        }
+        entries << value;
+    }
+    return entries;
+}
+
+bool Archive::isSafeRelativePath(const QString &path)
+{
+    if (path.isEmpty())
+        return false;
+    QString normalized = path;
+    normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    if (normalized.startsWith(QLatin1Char('/')))
+        return false;
+    // "C:" / UNC "//server/share"
+    if (normalized.size() > 1 && normalized.at(1) == QLatin1Char(':'))
+        return false;
+    const QStringList parts = normalized.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        if (part == QLatin1String(".."))
+            return false;
+        if (part.contains(QLatin1Char(':')))
+            return false;
+    }
+    return !parts.isEmpty();
+}
+
+bool Archive::isInside(const QString &root, const QString &path)
+{
+    const QString canonicalRoot = QFileInfo(root).canonicalFilePath();
+    if (canonicalRoot.isEmpty())
+        return false;
+    QString canonicalPath = QFileInfo(path).canonicalFilePath();
+    if (canonicalPath.isEmpty())
+        canonicalPath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (canonicalPath.compare(canonicalRoot, Qt::CaseInsensitive) == 0)
+        return true;
+#ifdef Q_OS_WIN
+    const QString prefix = canonicalRoot + QLatin1Char('/');
+    return canonicalPath.startsWith(prefix, Qt::CaseInsensitive);
+#else
+    return canonicalPath.startsWith(canonicalRoot + QLatin1Char('/'));
+#endif
 }
 
 bool Archive::createZip(const QStringList &entries, const QString &outputPath,

@@ -1,94 +1,96 @@
-# 更新记录
+# 更新日志
 
-## 1.1.0 — 2026-10-08
+## 1.1.1
 
-新增**管理器插件（Plugin SDK）**：给 McServerManager 本身加界面、加后端能力、加 Web 运维面板。
-完整接口文档见 [`docs/PLUGIN-SDK.md`](docs/PLUGIN-SDK.md)。
+### 接口版本（apiVersion）改为整数区间
 
-**插件系统**
+* `apiVersion` 现在是**整数**：管理器每增加一批新接口 `+1`。
+* 管理器维护 `SUPPORTED_MIN_API` / `SUPPORTED_MAX_API`（当前均为 `1`）：
+  插件的 `apiVersion` 不在区间内会**拒绝加载**，日志与界面写明原因。
+* 破坏性变更时抬高 `SUPPORTED_MIN_API`，旧插件自然淘汰，而不是行为异常。
+* `minManagerVersion` 只作为**用户可见的提示**（版本偏低时给出警告），不参与硬校验。
+* 兼容：写成字符串 `"1"` 仍能加载，但会提示改成整数；示例插件已改为整数写法。
+* `mcsm-cli plugin api` 现在输出 `apiVersion`（整数）、`supportedMinApi`、`supportedMaxApi`、
+  `managerVersion`、`apiVersionPolicy` 与 `security` 策略块。
 
-- 插件包导入：设置 → 插件扩展 → 添加插件，支持**本地 zip** 与 **URL** 两种来源；命令行等价入口
-  `mcsm-cli plugin package install --zip|--url`
-- 内置 **7-Zip**（`third_party/7zip/7za.exe`）：解压插件包不依赖目标机器安装任何压缩软件
-- **作用域自动识别**：`plugin.json` 的 `scope`，或按 `frontend/` / `backend/` / `web/` 目录结构推断出
-  `frontend` / `backend` / `web` / `global`；导入前先校验并把识别结果展示给用户
-- **前端扩展接口**：QJSEngine 宿主 + `mcsm.*` API（页面注册、区块化界面、Toast、存储、设置、
-  服务器列表、`backend.invoke` 调用任意后端命令、事件订阅、`include` 拆分脚本），插件页面自动出现在左侧菜单
-- **后端扩展接口**：独立进程 + JSON-Line 协议，支持 `node` / `python` / `java` / `exec` / `auto` 运行时与超时保护；
-  钩子覆盖 `plugin.install|enable|disable|uninstall`、
-  `server.beforeStart|afterStart|beforeStop|afterStop|beforeBackup|afterBackup|configApplied`、`scheduler.tick`
-- **后端性能优化类插件**：`server.beforeStart` 返回启动补丁（`jvmArgs` / `env` / `dockerArgs` / `note`，
-  或用 `cancel` + `reason` 阻止启动），合并写入 `<服务器目录>/.mcsm/start-patch.json`，
-  同时作用于容器参数与生成的启动脚本；停用插件后补丁自动清除
-- **支持库 / Web 面板类插件**：`plugin service start|stop|status` 管理插件自带的本地 HTTP 服务
-  （注入 `MCSM_PLUGIN_ID` / `MCSM_PLUGIN_DIR` / `MCSM_PLUGIN_DATA` / `MCSM_PLUGIN_PORT`），
-  界面「打开面板」按钮一键启动并打开浏览器
-- 示例插件：`examples/plugins/`（前端 `hello-panel`、后端 `perf-tuner`、全局 `ops-console`）+ 打包脚本
-- 接口文档：`docs/PLUGIN-SDK.md`，可用 `mcsm-cli plugin api` 导出机器可读清单
+### 安全：插件只能装在管理器目录里
 
-**界面与交互**
+* 安装目标必须位于 `<数据目录>/plugins/` 之内，越界直接拒绝（`UNSAFE_PLUGIN_PATH`）。
+* 解压前扫描压缩包条目：**绝对路径 / 盘符 / UNC / `..` 跳出目录**全部拒绝（zip-slip 防护）。
+* 解压后逐个校验落盘路径仍在插件目录内，并拒绝符号链接。
+* `frontend` / `backend` / `web` 入口与 `web.service` 必须是包内相对路径；
+  后端入口与前端 `mcsm.include()` 都会展开真实路径再校验，防止借助 `..` 或链接执行外部程序。
 
-- 设置页新增「插件扩展」分类（非实验性功能）：插件列表带作用域标签、启用开关、卸载、
-  打开页面 / 打开面板 / 打开插件目录 / 接口文档
-- 插件注册的页面会追加到左侧主菜单，沿用原有页面切换动画与主题
-- 界面深链接新增 `--page settings-plugins` / `extensions` / `settings-runtime`，并支持直接写插件页面 id
-- 设置页左侧菜单改为**固定列**（新增 `PageBase::setSideColumn()`）：菜单不再随内容滚动，
-  实验性功能开关与「返回主页」固定在窗口底部，长页面只滚动右侧内容
-- 左侧菜单「插件」改名为「服务器插件」，与「设置 → 插件扩展」区分；该页副标题也做了说明
-- 「本机 JDK」从实验性页面移到「设置 → 运行环境」（标注实验性，开关关闭时只显示提示）；
-  实验性页面暂时留空，预留给后续实验性能力
-- 深链接支持 `settings-appearance` / `settings-experimental` 等全部设置分页
+### 界面性能与"不互相拖死"
 
-**修复与改进**
+* 页面切换不再对整页做 `grab()` 快照，连点菜单时直接瞬切（不再逐帧动画）——这是卡顿的主因。
+* 窗口背景（渐变 + 两团柔光）改为缓存位图，只在尺寸/主题变化时重绘。
+* 页面激活时的刷新全部**节流**：`doctor`（会调用 docker CLI）4 秒内不重复执行，
+  各页面列表/详情 1.5–2.5 秒内不重复拉取；后台页面不再因轮询而重建控件。
+* 修复信号连接泄漏：设置页每次进入都会再连一次 `environmentChanged`，环境更新被重复执行 N 次。
+* 服务器列表在内容未变化时不再触发模型信号（轮询不再引起全界面重建与重绘）。
+* 隐藏页面会释放资源：控制台页离开 5 秒后停止 `docker logs --follow`；服务器页隐藏时不重建列表。
+* 插件前端脚本加**看门狗**：加载 2500ms / 单次事件 1000ms 预算，超时强制中断并临时停用该插件；
+  插件拿到的服务器列表改为缓存快照，消除"插件一调用就卡住整个窗口"的同步等待。
+* 后端异步请求加看门狗（15 分钟兜底），杜绝"一条命令卡住 → 回调永不返回 → 该功能永久卡死"。
+* 定时备份守护进程带 `--parent-pid`：管理器被强杀后守护进程自动退出，不再残留孤儿子进程。
 
-- 数据根目录（`--home` / `MCSM_HOME`）始终解析为绝对路径，插件注册表与安装路径不再受当前工作目录影响
-- 插件包解压时的相对路径计算错误，曾导致文件被复制到错误的子目录
-- `Json::parseObject` 现在兼容带 UTF-8 BOM 的 JSON（Windows 记事本 / PowerShell 写出的 `plugin.json` 可直接使用）
-- 发行版两种风味改为不同名字（`-win64` 与 `-win64-with-plugins`），
-  重新生成纯程序版时不再覆盖带示例插件的测试包；`package-release.ps1` 新增 `-Flavor` 参数
-- `gui-smoke.ps1` 新增 `-Resize WxH`，用于小窗口下的布局回归（菜单被滚走、卡片重叠这类问题）
+### 实测（12 逻辑核，快速轮切 7 个页面）
 
-**验证**
+| 场景 | 1.1.0 | 1.1.1 |
+| --- | --- | --- |
+| 空闲 | 0.29% | **0.03%** |
+| 120ms 间隔轮切（53 次） | 2.20% | **1.15%** |
+| 60ms 间隔轮切（95 次） | 2.91% | **1.76%** |
 
-- 后端冒烟测试扩展到 **56 项**，新增插件包回归：现场打包前端 / 后端 / 全局三种插件，
-  覆盖「校验识别 → 安装 → 重复安装拒绝 → `--force` 覆盖 → 列表 → 后端 JSON-Line 调用 → 启停 → 卸载 → 非法包拒绝」
-- 容器模式实测：`docker inspect` 确认插件写入的 JVM 参数进入容器 `JAVA_OPTS`，启动日志出现 `[mcsm] plugin tuning: com.example.perf-tuner`
-- 本机 JDK 模式实测：生成的 `start.cmd` 含插件参数，停用插件后补丁文件被删除、参数消失
-- 便携版（解压后仅系统 `PATH`）实测可完成插件安装与 `doctor` 自检
-- 小窗口（1100×700 / 1080×700）实测三个设置分页：左侧菜单完整可见，
-  实验性功能开关与「返回主页」位置一致，右侧内容独立滚动
+新增 `tools/ui-perf.ps1` 复现上述数据；`tools/smoke-test.ps1` 增加 10 项安全 / apiVersion 回归（共 67 项）。
 
-## 1.0.0 — 2026-10-03
+## 1.1.0
 
-首个完整版本：Qt 6 桌面端 + `mcsm-cli` 后端 + Docker 化 JDK 运行环境。
+### 新增：管理器插件包（Plugin SDK）
 
-**核心功能**
+* **插件导入**：设置 → 插件扩展 → 添加插件，支持**本地 zip** 与 **URL** 两种来源，
+  导入前先校验并展示识别到的作用域。命令行等价入口为 `mcsm-cli plugin package install|inspect`。
+* **内置 7-Zip**：解压使用随程序发布的 `third_party/7zip/7za.exe`，目标机器不需要安装任何压缩软件
+  （缺失时回退系统 7-Zip / tar）。7-Zip 的 LGPL 许可文本随包分发。
+* **作用域自动识别**：按 `plugin.json` 的 `scope` 或目录结构自动判定
+  `frontend` / `backend` / `web` / `global`，识别失败会拒绝导入并给出原因。
+* **前端扩展接口**：`QJSEngine` 宿主 + `mcsm.*` API
+  （`ui.registerPage` / `ui.setPageContent` / `toast` / `storage` / `settings` / `servers` /
+  `backend.invoke` / `events.on` / `include`），页面由
+  `heading / text / keyvalue / table / buttons / log / html / divider / progress` 区块描述，
+  自动跟随主题、字体与配色；插件页面会出现在左侧主菜单中。
+* **后端扩展接口**：独立进程 + **JSON-Line** 协议，支持 `node` / `python` / `java` / `exec` /
+  `auto` 运行时与超时保护；钩子覆盖 `plugin.install|enable|disable|uninstall`、
+  `server.beforeStart|afterStart|beforeStop|afterStop|beforeBackup|afterBackup|configApplied`、
+  `scheduler.tick`，并支持 `server.*` 通配。
+* **性能优化类插件**：`server.beforeStart` 可返回启动补丁
+  （`jvmArgs` / `env` / `dockerArgs` / `note`，或用 `cancel` + `reason` 阻止启动），
+  合并结果写入 `<服务器目录>/.mcsm/start-patch.json` 并在容器参数与生成的启动脚本中生效；
+  停用插件后补丁自动清除。
+* **支持库 / Web 面板类插件**：`plugin service start|stop|status` 管理插件自带的本地 HTTP 服务，
+  注入 `MCSM_PLUGIN_ID` / `MCSM_PLUGIN_DIR` / `MCSM_PLUGIN_DATA` / `MCSM_PLUGIN_PORT`，
+  界面上的「打开面板」按钮可一键启动并打开浏览器。
+* **接口文档**：新增 `docs/PLUGIN-SDK.md`（包结构、`plugin.json` 全字段、前后端 API、钩子与补丁、
+  权限说明、版本兼容、调试方法、命令速查），并可随时用 `mcsm-cli plugin api` 导出机器可读清单。
+* **示例插件**：`examples/plugins/hello-panel`（前端）、`perf-tuner`（后端）、`ops-console`（全局 + Web 面板），
+  以及打包脚本 `examples/plugins/build-examples.ps1`。
 
-- 一键自动配置（Paper / Purpur / 原版 / Fabric）与手动导入两种模式
-- 服务器生命周期管理：启动 / 停止 / 重启 / 强制停止 / 状态与资源占用
-- 控制台：实时日志跟随（按等级着色）+ RCON 指令（含常用快捷指令）
-- 配置文件：快捷表单与专家模式双模式编辑，保留注释，自动留档、可精确回滚
-- 备份：定时自动备份（间隔 / 保留份数 / 含插件 / 备份前存档）、手动快照、一键恢复
-- 插件市场：Modrinth / Hangar 搜索与安装，Spigot 搜索；支持启停与删除
-- 界面：暗黑 / 亮色主题，马卡龙粉-蓝配色，渐变与纯色两种风格，贝塞尔缓动动画与速度调节，多种字体预设与自定义字体
-- 实验性功能：扫描本机 JDK，创建服务器时可克隆本机 JDK 直接运行（不经过容器）
+### 改进
 
-**开发过程中修复的主要问题**
+* 数据根目录（`--home` / `MCSM_HOME`）现在始终解析为绝对路径，注册表与插件路径不再依赖当前工作目录。
+* `Json::parseObject` 兼容带 UTF-8 BOM 的 JSON（Windows 工具与 PowerShell 写出的 `plugin.json` 可直接使用）。
+* 设置页新增「插件扩展」分类（非实验性功能）。
+* 界面深链接增加 `--page settings-plugins` / `extensions` / `settings-runtime`，并支持直接写插件页面 id。
 
-- PaperMC 旧接口（`api.papermc.io/v2`）返回 410，迁移到新的 `fill.papermc.io/v3`
-- Minecraft 改用年份版本号后（26.x 需要 Java 25），JDK 版本推导规则更新；原版改为读取 Mojang 元数据
-- RCON 客户端两处缺陷（报文长度计算、`waitForReadyRead` 语义），修复前控制台指令完全不可用
-- RCON 端口未映射到宿主机，容器内监听但主机无法连接
-- 启动失败检测漏判：服务端损坏时容器被重启策略反复拉起，曾被误判为“启动成功”
-- `server.properties` 生成时出现重复键（motd / rcon.port / enable-rcon）
-- 备份恢复会误删插件，改为默认只回滚存档（`--scope all` 才完整回滚）
-- Modrinth 搜索的 `facets` 参数缺少外层数组导致 HTTP 400
-- 设置读取时先调用的 setter 会把未读取的默认值写回文件，导致动画速度与自定义数据目录每次启动被重置
-- 数据目录路径拼接错误（`…\McServerManager\mcsm-cli\McServerManager`）
-- 页面切换动画被中断后旧页面残留，造成控件堆叠与拖影（改为位图快照淡出）
-- 窗口只有左上角一小块可拖动；改为整个标题栏可拖动
-- 下拉列表在深色系统主题下渲染为黑底黑字（改为显式调色板 + Fusion 样式 + 弹出层样式）
-- 内容高于窗口时卡片被压缩导致文字重叠/被截断（改为按自然高度滚动）
-- 纯色风格下多个控件仍绘制渐变（按钮 / 卡片 / 开关 / 分段控件 / 侧栏 / 标题栏）
-- 若干编码陷阱：`QLatin1String` 处理中文导致乱码；命令行参数把全局开关的值误当作命令名
-- 实验性本机 JDK 模式：服务端 stdin 关闭导致控制台刷屏、启动器继承输出句柄导致调用方挂起
+### 测试
+
+* `tools/smoke-test.ps1` 增加插件包回归：现场打包前端 / 后端 / 全局三种插件，
+  覆盖「校验识别 → 安装 → 重复安装拒绝 → --force 覆盖 → 列表 → 后端 JSON-Line 调用 → 启停 → 卸载 → 非法包拒绝」。
+* GUI 冒烟测试新增插件页面验证（`--page hello-panel`、`--page settings-plugins`）。
+
+## 1.0.0
+
+* 首个版本：Docker 化 JDK 运行环境、一键自动配置（Paper / Purpur / 原版 / Fabric）、
+  控制台（日志 + RCON）、配置双模式与回滚、定时备份、Minecraft 插件市场、
+  暗黑 / 亮色与渐变 / 纯色主题、贝塞尔过渡动画、字体预设、实验性本机 JDK 模式。

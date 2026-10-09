@@ -53,6 +53,15 @@ QHash<int, QByteArray> ServerModel::roleNames() const
 
 void ServerModel::setServers(const QVector<ServerInfo> &servers)
 {
+    // The poller re-sends the full list every few seconds. Republishing an
+    // unchanged list made every page rebuild its widgets (and repaint) on each
+    // poll, so identical payloads are dropped here.
+    QJsonArray incoming;
+    for (const ServerInfo &info : servers)
+        incoming.append(info.raw);
+    if (incoming == m_published && !servers.isEmpty())
+        return;
+    m_published = incoming;
     beginResetModel();
     m_servers = servers;
     endResetModel();
@@ -134,6 +143,29 @@ int ServerModel::errorCount() const
             ++count;
     }
     return count;
+}
+
+QJsonArray ServerModel::toJsonArray() const
+{
+    QJsonArray array;
+    for (const ServerInfo &info : m_servers) {
+        // `raw` is the payload the backend sent, so plugin scripts see exactly
+        // the same fields as mcsm-cli server list
+        QJsonObject object = info.raw;
+        if (object.isEmpty()) {
+            object.insert(QStringLiteral("id"), info.id);
+            object.insert(QStringLiteral("name"), info.name);
+            object.insert(QStringLiteral("type"), info.type);
+            object.insert(QStringLiteral("mcVersion"), info.mcVersion);
+            object.insert(QStringLiteral("status"), info.status);
+            object.insert(QStringLiteral("port"), info.port);
+            object.insert(QStringLiteral("memory"), info.memory);
+        }
+        object.insert(QStringLiteral("statusText"), info.statusText());
+        object.insert(QStringLiteral("running"), info.isRunning());
+        array.append(object);
+    }
+    return array;
 }
 
 } // namespace mcsm

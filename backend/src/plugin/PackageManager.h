@@ -19,7 +19,12 @@ struct PluginManifest
     QString id;
     QString name;
     QString version;
-    QString apiVersion = QStringLiteral("1");
+    /// Plugin API level the plugin was written against. Plain integer: every
+    /// batch of new interfaces bumps it by one.
+    int apiVersion = 1;
+    /// Shown to the user only - never used to reject a plugin.
+    QString minManagerVersion;
+    bool apiSupported = true;
     QString description;
     QString author;
     QString homepage;
@@ -50,6 +55,7 @@ struct PluginManifest
     QString frontendEntry() const;
     QString backendEntry() const;
     QString webEntry() const;
+    QString webServiceEntry() const;
     int webPort() const;
 
     QJsonObject toJson() const;
@@ -81,7 +87,17 @@ struct PluginValidation
 class PackageManager
 {
 public:
-    static QString apiVersion();
+    /// Current (== highest supported) plugin API level.
+    static int apiVersion();
+    /// Oldest API level that still loads. Raised only on breaking changes, which
+    /// retires old plugins instead of silently misbehaving.
+    static int supportedMinApi();
+    static int supportedMaxApi();
+    static QString managerVersion();
+
+    /// A path that is safe to resolve inside a plugin directory (no drive
+    /// letters, no leading separator, no `..`).
+    static bool isSafePluginPath(const QString &relative);
 
     static QVector<PluginManifest> installed(bool includeDisabled = true);
     static PluginManifest find(const QString &id);

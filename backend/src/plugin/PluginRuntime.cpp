@@ -12,6 +12,7 @@
 #include <QUrl>
 
 #include "core/AppPaths.h"
+#include "core/Archive.h"
 #include "core/Logger.h"
 #include "core/ProcessRunner.h"
 #include "core/StringUtil.h"
@@ -116,7 +117,19 @@ bool PluginRuntime::resolveLaunch(const PluginManifest &manifest,
             *error = QStringLiteral("插件 %1 没有后端入口").arg(manifest.id);
         return false;
     }
+    // never execute a path that escapes the plugin directory: a manifest could
+    // otherwise point at ../../Windows/System32/...
+    if (!PackageManager::isSafePluginPath(entry)) {
+        if (error)
+            *error = QStringLiteral("插件入口路径不合法：%1").arg(entry);
+        return false;
+    }
     const QString script = QDir(manifest.path).filePath(entry);
+    if (!Archive::isInside(manifest.path, script)) {
+        if (error)
+            *error = QStringLiteral("插件入口超出了插件目录：%1").arg(entry);
+        return false;
+    }
     if (!QFileInfo::exists(script)) {
         if (error)
             *error = QStringLiteral("入口文件不存在：%1").arg(script);
